@@ -1,29 +1,63 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Sparkles, ArrowRight, Plus, Image as ImageIcon, ChevronDown, Play, Command, Mic, X, MicOff, Headphones, Settings2, Check, ChevronRight as ChevronRightIcon } from 'lucide-react';
+import { ArrowRight, Plus, Image as ImageIcon, Play, Command, Mic } from 'lucide-react';
 import { ChatMessage } from '../types';
+import { consultWorkflow, generateOrgStructure } from '../services/geminiService';
 
-const Screen1Consultant: React.FC = () => {
+// Type declaration for Web Speech API
+interface SpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start(): void;
+  stop(): void;
+  onresult: (event: any) => void;
+  onerror: (event: any) => void;
+  onend: () => void;
+}
+
+declare var SpeechRecognition: {
+  new (): SpeechRecognition;
+};
+
+declare var webkitSpeechRecognition: {
+  new (): SpeechRecognition;
+};
+
+interface Screen1ConsultantProps {
+  onOrgChartUpdate?: (data: any) => void;
+  onNavigateToTeam?: () => void;
+  messages?: ChatMessage[];
+  onMessagesChange?: (messages: ChatMessage[]) => void;
+}
+
+const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate, onNavigateToTeam, messages: propMessages, onMessagesChange }) => {
   const [input, setInput] = useState('');
   const [conversationStep, setConversationStep] = useState(0); 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [isTyping, setIsTyping] = useState(false);
-  const [thinkingSteps, setThinkingSteps] = useState<string[]>([]);
-  const [selectedTeam, setSelectedTeam] = useState("All Teams");
+  const [messages, setMessages] = useState<ChatMessage[]>(propMessages || []);
   
-  // Voice Mode State
-  const [isVoiceMode, setIsVoiceMode] = useState(false);
-  const [voiceStatus, setVoiceStatus] = useState<'listening' | 'processing' | 'speaking'>('listening');
+  // Sync with parent state
+  useEffect(() => {
+    if (propMessages) {
+      setMessages(propMessages);
+    }
+  }, [propMessages]);
+  
+  // Update parent when messages change
+  useEffect(() => {
+    if (onMessagesChange) {
+      onMessagesChange(messages);
+    }
+  }, [messages, onMessagesChange]);
+  const [isTyping, setIsTyping] = useState(false);
+  
+  // Voice recognition state
+  const [isListening, setIsListening] = useState(false);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const teams = [
-      { name: "Security & Assets", color: "bg-red-500" },
-      { name: "Growth & Sales", color: "bg-purple-600" },
-      { name: "Ops & Logistics", color: "bg-blue-500" },
-      { name: "Finance", color: "bg-emerald-500" },
-      { name: "People", color: "bg-pink-500" }
-  ];
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -31,22 +65,47 @@ const Screen1Consultant: React.FC = () => {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, isTyping, thinkingSteps]);
-
-  // Mock Voice Interaction Loop
+  }, [messages, isTyping]);
+  
+  // Initialize speech recognition
   useEffect(() => {
-      if (!isVoiceMode) return;
+    if (typeof window !== 'undefined') {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = false;
+        recognition.interimResults = false;
+        recognition.lang = 'en-US';
+        
+        recognition.onresult = (event: any) => {
+          const transcript = Array.from(event.results)
+            .map((result: any) => result[0].transcript)
+            .join('');
+          // Set the transcribed text in the input field
+          setInput(transcript);
+          setIsListening(false);
+        };
+        
+        recognition.onerror = (event: any) => {
+          console.error('Speech recognition error:', event.error);
+          setIsListening(false);
+        };
+        
+        recognition.onend = () => {
+          setIsListening(false);
+        };
+        
+        recognitionRef.current = recognition;
+      }
+    }
+    
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
+  }, []);
 
-      const interval = setInterval(() => {
-          setVoiceStatus(prev => {
-              if (prev === 'listening') return 'processing';
-              if (prev === 'processing') return 'speaking';
-              return 'listening';
-          });
-      }, 4000);
-
-      return () => clearInterval(interval);
-  }, [isVoiceMode]);
 
   const handleSend = async () => {
     if (!input.trim()) return;
@@ -59,66 +118,126 @@ const Screen1Consultant: React.FC = () => {
     };
 
     setMessages((prev) => [...prev, userMsg]);
+    const userInput = input;
     setInput('');
     setIsTyping(true);
-    setThinkingSteps([]);
 
-    // --- Thinking Process Simulation ---
-    let steps: string[] = [];
-    let responseText = "";
-    let nextStep = conversationStep;
+    // Build conversation history for Gemini
+    const conversationHistory = messages.map(msg => ({
+      role: msg.sender === 'user' ? 'user' as const : 'model' as const,
+      parts: [{ text: msg.text }]
+    }));
 
-    if (conversationStep === 0) {
-        // STEP 1: MAPPING & CONFIRMATION (No Prioritization yet)
-        steps = [
-            "Deconstructing operation into 5 domains...",
-            "Mapping: Security -> Premise & Fleet checks...",
-            "Mapping: Inventory -> Spoilage monitoring...",
-            "Mapping: Finance -> QuickBooks categorization...",
-            "Mapping: Sales -> Proposal generation...",
-            "Running Gap Analysis for 'Retail Owner-Operator'...",
-            "Gap Detected: Vendor Communications & Returns..."
-        ];
-        responseText = "I've mapped out your entire operation based on that description. It's a heavy load for one person. Here is the operational map I've built:\n\n1. Security: Physical asset protection (Store & Vans).\n2. Inventory: Perishable stock monitoring & Reordering.\n3. Finance: Bookkeeping & Transaction tagging.\n4. Growth: Customer inquiries & Proposals.\n5. People: Task delegation & Staff tracking.\n\nI noticed you didn't mention Vendor Communications or Return Processing. Should I include those in your workflow map, or are they handled elsewhere?";
-        nextStep = 1;
-    } else if (conversationStep === 1) {
-        // STEP 2: INCORPORATION & TRANSITION
-        steps = [
-            "Ingesting user feedback...",
-            "Finalizing Operational Workflow Map...",
-            "Cross-referencing with available Agent Architectures...",
-            "Designing Digital Org Chart...",
-            "Ready for Team Deployment..."
-        ];
-        responseText = "Understood. I have a complete picture of the workflow now.\n\nI've designed a team structure that covers all these bases—mixing Autonomous Agents for the repetitive high-volume tasks (like Inventory & Finance) and keeping Humans on the high-touch ones.\n\nHead over to the 'Your Team' tab to view and activate your new Digital Org Chart.";
-        nextStep = 2;
-    } else {
-         // Fallback / Loop
-         steps = ["Processing input...", "Updating context...", "Refining agent parameters..."];
-         responseText = "I've updated the blueprints based on that. Check the 'Your Team' tab to see the changes.";
-    }
+    try {
+      // Call Gemini API
+      let responseText = await consultWorkflow(userInput, conversationHistory);
+      
+      // Strip markdown formatting (**, __, etc.)
+      responseText = responseText
+        .replace(/\*\*(.*?)\*\*/g, '$1')  // Remove **bold**
+        .replace(/\*(.*?)\*/g, '$1')      // Remove *italic*
+        .replace(/__(.*?)__/g, '$1')     // Remove __bold__
+        .replace(/_(.*?)_/g, '$1')       // Remove _italic_
+        .replace(/`(.*?)`/g, '$1')       // Remove `code`
+        .replace(/#{1,6}\s/g, '')        // Remove headers
+        .trim();
 
-    // Execute Thinking Simulation Loop
-    // We add steps one by one with delays to simulate "thinking"
-    for (const step of steps) {
-        await new Promise(r => setTimeout(r, 800)); // Delay per step
-        setThinkingSteps(prev => [...prev, step]);
-    }
-    
-    // Final "Processing" delay
-    await new Promise(r => setTimeout(r, 600));
-
-    const systemMsg: ChatMessage = {
+      const systemMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         sender: 'system',
         text: responseText,
         timestamp: new Date(),
-    };
-    
-    setMessages((prev) => [...prev, systemMsg]);
-    setIsTyping(false);
-    setThinkingSteps([]);
-    setConversationStep(nextStep);
+      };
+      
+      setMessages((prev) => [...prev, systemMsg]);
+      
+      // Check if consultant is ready to build (mentions building, "your team", etc.)
+      const readyToBuild = responseText.toLowerCase().includes('build') || 
+                          responseText.toLowerCase().includes('your team') ||
+                          responseText.toLowerCase().includes("head over") ||
+                          (responseText.toLowerCase().includes("let me") && responseText.toLowerCase().includes('team')) ||
+                          responseText.toLowerCase().includes('organizational chart') ||
+                          responseText.toLowerCase().includes('digital worker');
+      
+      if (readyToBuild && onNavigateToTeam && onOrgChartUpdate) {
+        // Generate org structure from conversation
+        const fullConversation = [...messages, userMsg, systemMsg]
+          .map(msg => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+          .join('\n');
+        
+        try {
+          const orgStructure = await generateOrgStructure(fullConversation);
+          
+          if (orgStructure && orgStructure.children && orgStructure.children.length > 0) {
+            // Ensure name is "You" to match existing structure
+            if (orgStructure.name !== "You") {
+              orgStructure.name = "You";
+            }
+            // Update org chart with generated structure
+            onOrgChartUpdate(orgStructure);
+            
+            // Navigate to Your Team after a short delay
+            setTimeout(() => {
+              if (onNavigateToTeam) {
+                onNavigateToTeam();
+              }
+            }, 1500);
+          } else {
+            // If structure generation failed, create a simple structure based on conversation
+            // Extract agent name from conversation (look for mentions of agents)
+            const agentMatch = fullConversation.match(/(?:agent|worker|assistant).*?(?:for|that|to)\s+([^.!?\n]+)/i);
+            const agentName = agentMatch ? agentMatch[1].trim() : 'Review Responder'; // Default fallback
+            
+            const simpleStructure: any = {
+              name: "You",
+              type: 'human',
+              role: "Owner",
+              children: [
+                {
+                  name: "Customer Service",
+                  type: 'human',
+                  role: "Department",
+                  children: [
+                    {
+                      name: agentName,
+                      type: 'ai',
+                      role: "Review Management",
+                      status: 'needs_attention'
+                    }
+                  ]
+                }
+              ]
+            };
+            
+            onOrgChartUpdate(simpleStructure);
+            
+            setTimeout(() => {
+              if (onNavigateToTeam) {
+                onNavigateToTeam();
+              }
+            }, 1500);
+          }
+        } catch (error) {
+          console.error("Error generating org structure:", error);
+        }
+      }
+      
+      // Advance conversation step if we get a comprehensive response
+      if (conversationStep < 2 && responseText.length > 200) {
+        setConversationStep(conversationStep + 1);
+      }
+    } catch (error) {
+      console.error("Error calling Gemini:", error);
+      const errorMsg: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        sender: 'system',
+        text: "I encountered an error processing your request. Please try again.",
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMsg]);
+    } finally {
+      setIsTyping(false);
+    }
   };
 
   const sampleWorkflows = [
@@ -196,82 +315,6 @@ const Screen1Consultant: React.FC = () => {
 
   return (
     <div className="flex h-full w-full bg-white text-gray-900 font-sans overflow-hidden relative">
-      
-      {/* VOICE MODE OVERLAY (UPDATED VISUALS) */}
-      {isVoiceMode && (
-          <div className="absolute inset-0 z-50 bg-black flex flex-col items-center justify-center animate-in fade-in duration-300">
-              
-              {/* Top Settings Icon */}
-              <div className="absolute top-14 right-6 text-zinc-500">
-                   <Settings2 size={24} />
-              </div>
-
-              {/* Visualizer */}
-              <div className="flex-1 flex items-center justify-center w-full">
-                  <div className="flex items-center gap-5 h-48">
-                       {[0, 1, 2, 3].map(i => (
-                          <div 
-                            key={i}
-                            className="w-14 bg-white rounded-full transition-all duration-300 shadow-[0_0_15px_rgba(255,255,255,0.3)]"
-                            style={{
-                                height: voiceStatus === 'listening' ? '40px' : undefined,
-                                animation: voiceStatus === 'speaking' 
-                                    ? `voice-wave-${i} 1.${i*2 + 5}s infinite ease-in-out alternate`
-                                    : voiceStatus === 'processing'
-                                        ? `voice-pulse 1.5s infinite ease-in-out ${i * 0.2}s`
-                                        : undefined
-                            }}
-                          />
-                       ))}
-                  </div>
-              </div>
-
-              {/* Bottom Bar */}
-              <div className="w-full px-8 pb-12 flex items-center justify-between relative max-w-md mx-auto md:max-w-none">
-                   {/* Left: Mic */}
-                   <button className="w-14 h-14 rounded-full bg-zinc-800 text-white flex items-center justify-center hover:bg-zinc-700 transition-colors">
-                       <Mic size={24} />
-                   </button>
-
-                   {/* Center: Status Text */}
-                   <div className="text-zinc-400 text-sm font-medium text-center max-w-[200px] leading-relaxed">
-                       {voiceStatus === 'listening' ? 'Listening...' : 
-                        voiceStatus === 'processing' ? 'Thinking...' : 
-                        'Speaking...'}
-                   </div>
-
-                   {/* Right: Close/Stop */}
-                   <button 
-                      onClick={() => setIsVoiceMode(false)}
-                      className="w-14 h-14 rounded-full bg-zinc-800 text-white flex items-center justify-center hover:bg-zinc-700 transition-colors"
-                   >
-                       <X size={24} />
-                   </button>
-              </div>
-
-              {/* Animation Styles */}
-              <style>{`
-                  @keyframes voice-wave-0 { 0% { height: 40px; } 100% { height: 120px; } }
-                  @keyframes voice-wave-1 { 0% { height: 40px; } 100% { height: 160px; } }
-                  @keyframes voice-wave-2 { 0% { height: 40px; } 100% { height: 140px; } }
-                  @keyframes voice-wave-3 { 0% { height: 40px; } 100% { height: 110px; } }
-                  
-                  @keyframes voice-pulse {
-                      0% { height: 40px; opacity: 0.6; }
-                      50% { height: 60px; opacity: 1; }
-                      100% { height: 40px; opacity: 0.6; }
-                  }
-                  @keyframes spin-slow {
-                      from { transform: rotate(0deg); }
-                      to { transform: rotate(360deg); }
-                  }
-                  .animate-spin-slow {
-                      animation: spin-slow 3s linear infinite;
-                  }
-              `}</style>
-          </div>
-      )}
-
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col relative">
         
@@ -281,40 +324,6 @@ const Screen1Consultant: React.FC = () => {
               <span className="font-medium text-gray-900">Workflow Architect</span>
               <span className="text-gray-300">/</span>
               <span className="text-sm">New Session</span>
-           </div>
-           
-           {/* Team Dropdown */}
-           <div className="relative group">
-              <button className="flex items-center gap-2 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-sm font-medium text-gray-900 hover:bg-gray-100 transition-colors">
-                  {selectedTeam === 'All Teams' ? (
-                      <span className="w-2 h-2 rounded-full bg-gray-400"></span>
-                  ) : (
-                      <span className={`w-2 h-2 rounded-full ${teams.find(t => t.name === selectedTeam)?.color || 'bg-gray-400'}`}></span>
-                  )}
-                  {selectedTeam}
-                  <ChevronDown size={14} className="text-gray-400"/>
-              </button>
-              <div className="absolute right-0 top-full mt-2 w-56 bg-white border border-gray-200 rounded-xl shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all z-20 overflow-hidden">
-                  <div className="px-3 py-2 text-xs font-bold text-gray-400 uppercase bg-gray-50 border-b border-gray-100">Select Team</div>
-                  <button onClick={() => setSelectedTeam("All Teams")} className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 border-b border-gray-100">
-                      <span className="w-2 h-2 rounded-full bg-gray-400"></span> All Teams
-                  </button>
-                  {teams.map((team) => (
-                      <button 
-                        key={team.name}
-                        onClick={() => setSelectedTeam(team.name)} 
-                        className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                      >
-                          <span className={`w-2 h-2 rounded-full ${team.color}`}></span> 
-                          {team.name}
-                      </button>
-                  ))}
-                  <div className="border-t border-gray-100 mt-1 pt-1 pb-1">
-                      <button className="w-full text-left px-4 py-2 text-xs font-medium text-gray-500 hover:text-purple-600 flex items-center gap-2">
-                          <Plus size={12} /> Create New Team
-                      </button>
-                  </div>
-              </div>
            </div>
         </div>
 
@@ -349,19 +358,6 @@ const Screen1Consultant: React.FC = () => {
                           </button>
                       ))}
                   </div>
-                  
-                  {/* Demo Trigger Button */}
-                  <div className="flex justify-center">
-                    <button 
-                        onClick={() => setInput("I am the owner-operator of a retail business with a physical footprint, responsible for bridging on-site logistics with back-office administration. My day-to-day operations involve securing physical assets (confirming premises and fleet vans are locked at night), managing perishable inventory by identifying spoilage via camera feeds, and using that data to automate weekly stock ordering. On the growth side, I need to instantly generate quotes, proposals, and marketing collateral to respond to customer inquiries automatically. Financially, I oversee the books, requiring automated categorization of transactions imported into QuickBooks (differentiating expenses like travel vs. rent). Finally, I act as a team lead, needing a collaborative workspace where I can assign and track specific operational tasks across my staff (e.g., 'Sally is handling XYZ'). My goal is to automate these specific workflows to streamline my daily management.")}
-                        className="flex items-center gap-2 px-4 py-2 bg-gray-50 border border-gray-200 rounded-full text-gray-500 hover:text-purple-600 hover:border-purple-200 hover:bg-purple-50 transition-all group"
-                    >
-                        <div className="w-5 h-5 bg-white rounded-full flex items-center justify-center shadow-sm group-hover:scale-110 transition-transform">
-                            <Play size={10} fill="currentColor" />
-                        </div>
-                        <span className="text-xs font-medium">Play Demo: Dallas Flower Shop</span>
-                    </button>
-                  </div>
               </div>
             </div>
           ) : (
@@ -370,8 +366,11 @@ const Screen1Consultant: React.FC = () => {
                {messages.map((msg) => (
                   <div key={msg.id} className={`flex gap-4 ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                      {msg.sender === 'system' && (
-                        <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center text-purple-600 shrink-0 mt-1">
-                           <Sparkles size={16} />
+                        <div className="flex flex-col items-center shrink-0 mt-1">
+                           <div className="w-8 h-8 rounded-full flex items-center justify-center overflow-hidden bg-white border border-gray-200">
+                              <img src="/Lumi.png" alt="Lumi" className="w-full h-full object-cover" />
+                           </div>
+                           <span className="text-[10px] text-gray-500 mt-1 font-medium">Lumi</span>
                         </div>
                      )}
                      
@@ -389,30 +388,16 @@ const Screen1Consultant: React.FC = () => {
                
                {isTyping && (
                   <div className="flex gap-4 animate-in fade-in slide-in-from-bottom-2">
-                     <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center text-purple-600 shrink-0 mt-1">
-                        <Sparkles size={16} />
+                     <div className="flex flex-col items-center shrink-0 mt-1">
+                        <div className="w-8 h-8 rounded-full flex items-center justify-center overflow-hidden bg-white border border-gray-200">
+                           <img src="/Lumi.png" alt="Lumi" className="w-full h-full object-cover" />
+                        </div>
+                        <span className="text-[10px] text-gray-500 mt-1 font-medium">Lumi</span>
                      </div>
-                     <div className="space-y-2 max-w-[80%]">
-                        {/* Thinking Process UI */}
-                        <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm max-w-md space-y-3">
-                            <div className="flex items-center gap-2 text-xs font-bold text-gray-500 uppercase tracking-wider">
-                                <Sparkles size={12} className="text-purple-500 animate-spin-slow" />
-                                AI Reasoning Trace
-                            </div>
-                            <div className="space-y-2">
-                                {thinkingSteps.map((step, i) => (
-                                     <div key={i} className="flex items-start gap-3 animate-in fade-in slide-in-from-left-2 duration-300">
-                                        <div className="mt-0.5 w-4 h-4 rounded-full bg-green-50 flex items-center justify-center shrink-0">
-                                            <Check size={10} className="text-green-600" />
-                                        </div>
-                                        <span className="text-sm text-gray-600 leading-tight">{step}</span>
-                                    </div>
-                                ))}
-                                <div className="flex items-center gap-3 animate-pulse opacity-60">
-                                     <div className="w-4 h-4 rounded-full border-2 border-gray-200 border-t-purple-500 animate-spin shrink-0"></div>
-                                     <span className="text-sm text-gray-400">Processing...</span>
-                                </div>
-                            </div>
+                     <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm">
+                        <div className="flex items-center gap-2 animate-pulse">
+                            <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
+                            <span className="text-sm text-gray-500">Thinking...</span>
                         </div>
                      </div>
                   </div>
@@ -462,11 +447,28 @@ const Screen1Consultant: React.FC = () => {
                     </div>
                     
                     <div className="flex items-center gap-2">
-                        {/* Voice Mode Button */}
+                        {/* Voice Input Button */}
                         <button 
-                          onClick={() => setIsVoiceMode(true)}
-                          className="p-2 rounded-full bg-black text-white hover:bg-gray-800 transition-all flex items-center justify-center"
-                          title="Start Voice Conversation"
+                          onClick={() => {
+                            if (!isListening && recognitionRef.current) {
+                              try {
+                                recognitionRef.current.start();
+                                setIsListening(true);
+                              } catch (error) {
+                                console.error('Failed to start speech recognition:', error);
+                                setIsListening(false);
+                              }
+                            } else if (isListening && recognitionRef.current) {
+                              recognitionRef.current.stop();
+                              setIsListening(false);
+                            }
+                          }}
+                          className={`p-2 rounded-full transition-all flex items-center justify-center ${
+                            isListening 
+                              ? 'bg-red-600 text-white animate-pulse' 
+                              : 'bg-black text-white hover:bg-gray-800'
+                          }`}
+                          title={isListening ? "Stop Recording" : "Start Voice Input"}
                         >
                             <Mic size={18} />
                         </button>

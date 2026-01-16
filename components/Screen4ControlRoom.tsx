@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Video, AlertCircle, CheckCircle2, MessageSquare, DollarSign, Clock, Eye, MoreHorizontal, ChevronDown, Plus, Layers } from 'lucide-react';
 
 // Types for our Kanban Board
@@ -20,150 +20,133 @@ interface AgentTask {
   salesDetail?: string;
 }
 
-const Screen4ControlRoom: React.FC = () => {
+interface NodeData {
+  name: string;
+  type: 'ai' | 'human';
+  role?: string;
+  img?: string;
+  status?: 'active' | 'needs_attention';
+  children?: NodeData[];
+}
+
+interface Screen4ControlRoomProps {
+  orgChartData?: NodeData;
+}
+
+const Screen4ControlRoom: React.FC<Screen4ControlRoomProps> = ({ orgChartData }) => {
   const [selectedTeam, setSelectedTeam] = useState('All Teams');
 
-  // Mapping Agents to Org Chart Teams
-  const getAgentTeam = (agentName: string): string => {
-      const map: Record<string, string> = {
-          'Store Sentinel': 'Security & Assets',
-          'Review Responder': 'Growth & Sales',
-          'Sales Associate': 'Growth & Sales',
-          'Content Crafter': 'Growth & Sales',
-          'Inventory Intel': 'Ops & Logistics',
-          'Delivery Coord': 'Ops & Logistics',
-          'Route Planner': 'Ops & Logistics',
-          'QuickBooks Bot': 'Finance',
-          'Payroll Admin': 'Finance',
-          'Staff Liaison': 'People',
-          'Labor Scheduler': 'People'
-      };
-      return map[agentName] || 'Unassigned';
+  // Extract all AI agents from org chart data
+  const extractAgents = (node: NodeData, parentDept?: string): Array<{ name: string; dept: string; status?: string }> => {
+    const agents: Array<{ name: string; dept: string; status?: string }> = [];
+    
+    if (node.type === 'ai' && node.status === 'active') {
+      agents.push({ name: node.name, dept: parentDept || 'Unassigned', status: node.status });
+    }
+    
+    if (node.children) {
+      const deptName = node.type === 'human' && node.role?.includes('Manager') ? node.name : parentDept;
+      node.children.forEach(child => {
+        agents.push(...extractAgents(child, deptName));
+      });
+    }
+    
+    return agents;
+  };
+
+  const activeAgents = orgChartData ? extractAgents(orgChartData) : [];
+  const agentNames = activeAgents.map(a => a.name);
+
+  // Get unique departments from active agents
+  const getUniqueDepartments = () => {
+    const depts = new Set(activeAgents.map(a => a.dept).filter(Boolean));
+    return Array.from(depts).map(name => ({
+      name,
+      color: getDepartmentColor(name)
+    }));
+  };
+
+  const getDepartmentColor = (deptName: string): string => {
+    const colorMap: Record<string, string> = {
+      'Security & Assets': 'bg-red-500',
+      'Growth & Sales': 'bg-purple-600',
+      'Ops & Logistics': 'bg-blue-500',
+      'Finance': 'bg-emerald-500',
+      'People': 'bg-pink-500'
+    };
+    return colorMap[deptName] || 'bg-gray-500';
   };
 
   const teams = [
-      { name: "Security & Assets", color: "bg-red-500" },
-      { name: "Growth & Sales", color: "bg-purple-600" },
-      { name: "Ops & Logistics", color: "bg-blue-500" },
-      { name: "Finance", color: "bg-emerald-500" },
-      { name: "People", color: "bg-pink-500" }
+    { name: "All Teams", color: "bg-gray-400" },
+    ...getUniqueDepartments()
   ];
 
-  // Mock Data mimicking the Flower Shop State
-  const [tasks, setTasks] = useState<AgentTask[]>([
-    {
-      id: '1',
-      agentName: 'Store Sentinel',
-      type: 'security',
-      status: 'running',
-      title: 'Premise Monitor',
-      timestamp: 'Live',
-      thumbnail: 'https://images.unsplash.com/photo-1528698827591-e19ccd7bc23d?q=80&w=800&auto=format&fit=crop',
-      logs: [
-        "10:02 AM: Checked Back Door - LOCKED",
-        "10:05 AM: Checked Delivery Van #2 - LOCKED",
-        "10:15 AM: Motion @ Front Desk - Staff Identified",
-        "10:20 AM: Checked Cooler Temp - 38°F (Optimal)"
-      ]
-    },
-    {
-      id: '5',
-      agentName: 'Delivery Coord',
-      type: 'logistics',
-      status: 'running',
-      title: 'Tracking Fleet',
-      timestamp: 'Live',
-      logisticsDetail: 'Driver 1 (Mike): En route to Downtown (ETA 5 mins). Driver 2 (Sarah): Loading at dock.',
-    },
-    {
-      id: '2',
-      agentName: 'Staff Liaison',
-      type: 'message',
-      status: 'review',
-      title: 'Shift Swap Request',
-      timestamp: '10:15 AM',
-      messageDetail: 'Sarah: "Hi Chitra, I woke up with a fever. Can I swap shifts with Mike for tomorrow?"'
-    },
-    {
-      id: '6',
-      agentName: 'Inventory Intel',
-      type: 'inventory',
-      status: 'review',
-      title: 'Spoilage Alert',
-      timestamp: '10:10 AM',
-      inventoryDetail: 'Detected 30% wilting in White Roses (Batch #44). Suggestion: Discount 50% or Compost.',
-    },
-    {
-      id: '7',
-      agentName: 'Sales Associate',
-      type: 'sales',
-      status: 'review',
-      title: 'Wedding Quote Draft',
-      timestamp: '09:55 AM',
-      salesDetail: 'Drafted Proposal for "Miller Wedding" ($1,200). Includes Peonies and Hydrangeas. Ready for approval.',
-    },
-    {
-      id: '3',
-      agentName: 'QuickBooks Bot',
-      type: 'finance',
-      status: 'review',
-      title: 'Unmatched Transaction',
-      timestamp: '09:45 AM',
-      financeDetail: '$45.00 - Shell Station (Auto-Categorize as Travel?)'
-    },
-    {
-      id: '8',
-      agentName: 'Review Responder',
-      type: 'message',
-      status: 'completed',
-      title: 'Reply to 5-Star Review',
-      timestamp: '09:30 AM',
-      messageDetail: 'Replied to Jane Doe: "Thank you Jane! We are so glad you loved the arrangement!"'
-    },
-    {
-      id: '4',
-      agentName: 'Payroll Admin',
-      type: 'payroll',
-      status: 'completed',
-      title: 'Bi-Weekly Payroll Run',
-      timestamp: '08:30 AM',
-      logs: ["Payroll sent to bank for processing."]
-    },
-    {
-      id: '9',
-      agentName: 'Route Planner',
-      type: 'logistics',
-      status: 'completed',
-      title: 'Daily Route Optimization',
-      timestamp: '08:00 AM',
-      logisticsDetail: 'Optimized 14 stops. Saved approx 12 miles vs unoptimized.',
-    },
-     {
-      id: '10',
-      agentName: 'QuickBooks Bot',
-      type: 'finance',
-      status: 'completed',
-      title: 'Rent Payment',
-      timestamp: '01:00 AM',
-      financeDetail: 'Categorized $2,500 payment to "Real Estate Corp" as Rent Expense.'
+  // Mapping Agents to Org Chart Teams
+  const getAgentTeam = (agentName: string): string => {
+    const agent = activeAgents.find(a => a.name === agentName);
+    return agent?.dept || 'Unassigned';
+  };
+
+  // Generate tasks only for active agents
+  const generateTasksForAgents = (): AgentTask[] => {
+    if (activeAgents.length === 0) {
+      return [];
     }
-  ]);
+
+    // For now, create placeholder tasks for active agents
+    // In a real implementation, these would come from the agent's actual activity
+    return activeAgents.map((agent, index) => ({
+      id: `task-${index}`,
+      agentName: agent.name,
+      type: inferTaskType(agent.name),
+      status: 'running' as const,
+      title: `${agent.name} - Active`,
+      timestamp: 'Live',
+      logs: agent.name.toLowerCase().includes('security') || agent.name.toLowerCase().includes('sentinel') 
+        ? [`${new Date().toLocaleTimeString()}: ${agent.name} is monitoring...`]
+        : undefined
+    }));
+  };
+
+  const inferTaskType = (agentName: string): AgentTask['type'] => {
+    const name = agentName.toLowerCase();
+    if (name.includes('security') || name.includes('sentinel')) return 'security';
+    if (name.includes('sales') || name.includes('review')) return 'sales';
+    if (name.includes('finance') || name.includes('quickbooks') || name.includes('payroll')) return 'finance';
+    if (name.includes('inventory') || name.includes('stock')) return 'inventory';
+    if (name.includes('delivery') || name.includes('route') || name.includes('logistics')) return 'logistics';
+    if (name.includes('staff') || name.includes('liaison') || name.includes('people')) return 'message';
+    return 'message';
+  };
+
+  const [tasks, setTasks] = useState<AgentTask[]>(generateTasksForAgents());
+
+  // Update tasks when org chart data changes
+  useEffect(() => {
+    if (orgChartData) {
+      const newTasks = generateTasksForAgents();
+      setTasks(newTasks);
+    } else {
+      setTasks([]);
+    }
+  }, [orgChartData]);
 
   // Simulate "Thinking" logs for the Security Agent
   useEffect(() => {
     const interval = setInterval(() => {
       setTasks(prev => prev.map(task => {
         if (task.type === 'security' && task.logs) {
-          const newLog = `10:${21 + Math.floor(Math.random() * 40)} AM: Verified Sensor ${Math.floor(Math.random() * 4) + 1} - OK`;
-          const updatedLogs = [...task.logs.slice(1), newLog];
+          const newLog = `${new Date().toLocaleTimeString()}: ${task.agentName} is monitoring...`;
+          const updatedLogs = [...task.logs.slice(-3), newLog];
           return { ...task, logs: updatedLogs };
         }
         return task;
       }));
-    }, 3000);
+    }, 5000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [tasks]);
 
   // Filter Tasks
   const filteredTasks = selectedTeam === 'All Teams' 

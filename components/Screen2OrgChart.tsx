@@ -1,7 +1,8 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
-import { Bot, User, Layers, Box, Settings, ZoomIn, Play, X, Camera, Slack, Globe, ToggleRight, ToggleLeft, GripVertical, Send, Sparkles, AlertTriangle, CheckCircle, Edit2, Map, Truck, Plus, ImageIcon, Command, Mic, ArrowRight, Shield, ShieldAlert, Zap, ArrowRightCircle, GitBranch, AlertCircle } from 'lucide-react';
+import { Bot, User, Layers, Box, Settings, ZoomIn, Play, X, Camera, Slack, Globe, ToggleRight, ToggleLeft, GripVertical, Send, AlertTriangle, CheckCircle, Edit2, Map, Truck, Plus, ImageIcon, Command, Mic, ArrowRight, Shield, ShieldAlert, Zap, ArrowRightCircle, GitBranch, AlertCircle } from 'lucide-react';
+import { buildAgent, extractAgentContext } from '../services/geminiService';
 
 interface NodeData {
   name: string;
@@ -12,120 +13,12 @@ interface NodeData {
   children?: NodeData[];
 }
 
-// Initial Data: Solopreneur State - Chitra wears all hats
+// Initial Data: Empty state - user starts with no team structure
 const initialData: NodeData = {
-  name: "Chitra Musuvathy",
+  name: "You",
   type: 'human',
-  role: "CEO & Owner",
-  img: "https://ui-avatars.com/api/?name=Chitra+Musuvathy&background=fbcfe8&color=be185d",
-  children: [
-    {
-      name: "Security & Assets",
-      type: 'human',
-      role: "Acting Manager",
-      img: "https://ui-avatars.com/api/?name=Chitra+Musuvathy&background=fbcfe8&color=be185d",
-      children: [
-         {
-          name: "Store Sentinel",
-          type: 'ai',
-          role: "Premise & Fleet",
-          status: 'needs_attention'
-        }
-      ]
-    },
-    {
-        name: "Growth & Sales",
-        type: 'human',
-        role: "Acting Manager",
-        img: "https://ui-avatars.com/api/?name=Chitra+Musuvathy&background=fbcfe8&color=be185d",
-        children: [
-            {
-                name: "Review Responder",
-                type: 'ai',
-                role: "Reputation Mgmt",
-                status: 'needs_attention'
-            },
-            {
-                name: "Sales Associate",
-                type: 'ai',
-                role: "Quotes & Proposals",
-                status: 'needs_attention'
-            },
-            {
-                name: "Content Crafter",
-                type: 'ai',
-                role: "Social Media",
-                status: 'needs_attention'
-            }
-        ]
-    },
-    {
-      name: "Ops & Logistics",
-      type: 'human',
-      role: "Acting Manager",
-      img: "https://ui-avatars.com/api/?name=Chitra+Musuvathy&background=fbcfe8&color=be185d",
-      children: [
-        {
-          name: "Inventory Intel",
-          type: 'ai',
-          role: "Spoilage & Stock",
-          status: 'needs_attention'
-        },
-        {
-          name: "Delivery Coord",
-          type: 'ai',
-          role: "Fleet Logistics",
-          status: 'needs_attention'
-        },
-        {
-          name: "Route Planner", // Starts as Human
-          type: 'human',
-          role: "Manual Task",
-          img: "https://ui-avatars.com/api/?name=Chitra+M&background=f3f4f6&color=4b5563",
-        }
-      ]
-    },
-    {
-      name: "Finance",
-      type: 'human',
-      role: "Acting Manager",
-      img: "https://ui-avatars.com/api/?name=Chitra+Musuvathy&background=fbcfe8&color=be185d",
-      children: [
-        {
-          name: "QuickBooks Bot",
-          type: 'ai',
-          role: "Expense Autopilot",
-          status: 'needs_attention'
-        },
-         {
-          name: "Payroll Admin", // Manual Human Task
-          type: 'human',
-          role: "Manual Run",
-          img: "https://ui-avatars.com/api/?name=Chitra+M&background=fbcfe8&color=be185d",
-        }
-      ]
-    },
-    {
-        name: "People",
-        type: 'human',
-        role: "Acting Manager",
-        img: "https://ui-avatars.com/api/?name=Chitra+Musuvathy&background=fbcfe8&color=be185d",
-        children: [
-             {
-                name: "Staff Liaison",
-                type: 'ai',
-                role: "Policy Bot",
-                status: 'needs_attention'
-            },
-            {
-                name: "Labor Scheduler", // Manual Human Task
-                type: 'human',
-                role: "Staff Mgmt",
-                img: "https://ui-avatars.com/api/?name=Chitra+M&background=fbcfe8&color=be185d",
-            }
-        ]
-    }
-  ]
+  role: "Owner",
+  children: []
 };
 
 // Types for Agent Builder Chat
@@ -140,17 +33,37 @@ interface AgentBlueprint {
     flowSteps: { label: string; type: 'trigger' | 'action' | 'decision' | 'end' }[];
 }
 
-const Screen2OrgChart: React.FC = () => {
+interface Screen2OrgChartProps {
+  orgChartData?: NodeData;
+  onOrgChartUpdate?: (data: NodeData) => void;
+  consultantHistory?: Array<{ sender: string; text: string; timestamp?: Date }>;
+}
+
+const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgChartUpdate, consultantHistory = [] }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
-  const [graphData, setGraphData] = useState<NodeData>(initialData);
+  const [graphData, setGraphData] = useState<NodeData>(orgChartData || initialData);
+  
+  // Sync with parent state
+  useEffect(() => {
+    if (orgChartData) {
+      setGraphData(orgChartData);
+    }
+  }, [orgChartData]);
+  
+  // Update parent when graphData changes
+  useEffect(() => {
+    if (onOrgChartUpdate) {
+      onOrgChartUpdate(graphData);
+    }
+  }, [graphData, onOrgChartUpdate]);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   
   // Team Architect Chat State
   const [teamChatInput, setTeamChatInput] = useState("");
   const [teamChatMessages, setTeamChatMessages] = useState<{sender: 'user' | 'system', text: string}[]>([
-      {sender: 'system', text: 'This represents your current organizational structure, with you acting as lead in all departments. Digital workers (AI) are drafted to assist.'}
+      {sender: 'system', text: 'Your organizational structure will appear here. Start by describing your workflow in the Workspace tab, and I\'ll help you build your team of AI agents.'}
   ]);
   const [chatState, setChatState] = useState<'idle' | 'human_pending'>('idle');
   const [isChatExpanded, setIsChatExpanded] = useState(false);
@@ -205,37 +118,36 @@ const Screen2OrgChart: React.FC = () => {
               // Reset Blueprint for new config session
               setBlueprint({ greenList: [], redList: [], flowSteps: [] });
 
-              // INITIAL DIAGNOSTIC MESSAGES
-              let initialText = `I am the architect for ${selectedAgent}. I need to map your end-to-end process before we deploy.`;
+              // Extract context from consultant conversation
+              const loadAgentContext = async () => {
+                try {
+                  const context = await extractAgentContext(selectedAgent, consultantHistory);
+                  
+                  // Set summary as first message
+                  setBuilderMessages([{ sender: 'system', text: context.summary }]);
+                  
+                  // Populate blueprint if available
+                  if (context.blueprint) {
+                    setBlueprint({
+                      greenList: context.blueprint.greenList || [],
+                      redList: context.blueprint.redList || [],
+                      flowSteps: context.blueprint.flowSteps || []
+                    });
+                  }
+                } catch (error) {
+                  console.error("Error loading agent context:", error);
+                  // Fallback to default message
+                  setBuilderMessages([{ 
+                    sender: 'system', 
+                    text: `I am the architect for ${selectedAgent}. Based on our conversation, I understand you want to automate this workflow. Let me ask some clarifying questions to configure this agent properly.` 
+                  }]);
+                }
+              };
               
-              switch(selectedAgent) {
-                  case "Route Planner":
-                      initialText = "I am the architect for Route Planner. To optimize your logistics, I need to understand your 'North Star' metric.\n\nDo we prioritize Speed (e.g. for weddings/events) regardless of cost, or Efficiency (grouping drops to save fuel)?";
-                      break;
-                  case "Store Sentinel":
-                      initialText = "I am the architect for Store Sentinel. I need to define the 'Rules of Engagement' for security events.\n\nShould I adopt a 'Zero Tolerance' posture (alert on all motion) or a 'Verified Threat' posture (only alert on lingering >30s)?";
-                      break;
-                  case "Review Responder":
-                      initialText = "I am the architect for Review Responder. I need to align with your Brand Voice and Escalation Policy.\n\nWhen handling negative feedback, should I prioritize 'Customer Retention' (apologize & refund freely) or 'Policy Defense' (stick to terms)?";
-                      break;
-                  case "Staff Liaison":
-                      initialText = "I am the architect for Staff Liaison. I need to establish my authority level regarding Human Resources.\n\nFor shift swaps and schedule changes, do you want me to 'Auto-Approve' valid requests or 'Draft Only' for your final sign-off?";
-                      break;
-                  case "Inventory Intel":
-                      initialText = "I am the architect for Inventory Intel. I need to set the threshold for spoilage intervention.\n\nShould I be 'Aggressive' (mark down product at first sign of age) or 'Premium' (discard imperfects to maintain brand image)?";
-                      break;
-                  case "Sales Associate":
-                      initialText = "I am the architect for Sales Associate. I need to know how aggressive to be with closing.\n\nShould I focus on 'Volume' (send rapid, standardized quotes) or 'High Touch' (ask qualifying questions before quoting)?";
-                      break;
-                  case "QuickBooks Bot":
-                      initialText = "I am the architect for QuickBooks Bot. I need to define my autonomy over your General Ledger.\n\nDo you want 'Full Auto-Categorization' based on history, or 'Review Mode' for anything over $100?";
-                      break;
-              }
-
-              setBuilderMessages([{ sender: 'system', text: initialText }]);
+              loadAgentContext();
           }
       }
-  }, [selectedAgent]);
+  }, [selectedAgent, consultantHistory]);
 
   // Handle D3 Rendering & Zoom
   useEffect(() => {
@@ -292,160 +204,155 @@ const Screen2OrgChart: React.FC = () => {
           }
       });
 
+    // Helper function to get initials from name
+    const getInitials = (name: string): string => {
+      const parts = name.split(' ');
+      if (parts.length >= 2) {
+        return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+      }
+      return name.substring(0, 2).toUpperCase();
+    };
+
     // Render Nodes based on Type
     nodes.each(function(d) {
       const node = d3.select(this);
       
-      if (d.data.type === 'ai') {
-        // AI Node
-        node.append("rect")
-          .attr("width", 180)
-          .attr("height", 80)
-          .attr("x", -90)
-          .attr("y", -40)
-          .attr("rx", 16)
-          .attr("fill", "white")
-          .attr("stroke", selectedAgent === d.data.name ? "#9333ea" : "#E5E7EB")
-          .attr("stroke-width", selectedAgent === d.data.name ? 2 : 1)
-          .style("filter", "drop-shadow(0 4px 12px rgb(0 0 0 / 0.05))");
-          
-        // Icon Box
-        node.append("rect")
-            .attr("width", 36)
-            .attr("height", 36)
-            .attr("x", -76)
-            .attr("y", -18)
-            .attr("rx", 10)
-            .attr("fill", "#F3E8FF"); 
-            
-        // Text
+      // Unified style for both AI and Human nodes - rounded cards with avatar on left
+      const cardWidth = d.data.type === 'ai' ? 200 : 180;
+      const cardHeight = d.data.type === 'ai' ? 64 : 56;
+      const cardX = -cardWidth / 2;
+      const cardY = -cardHeight / 2;
+      
+      // Card background
+      node.append("rect")
+        .attr("width", cardWidth)
+        .attr("height", cardHeight)
+        .attr("x", cardX)
+        .attr("y", cardY)
+        .attr("rx", 12)
+        .attr("fill", "white")
+        .attr("stroke", selectedAgent === d.data.name ? "#9333ea" : "#E5E7EB")
+        .attr("stroke-width", selectedAgent === d.data.name ? 2 : 1)
+        .style("filter", "drop-shadow(0 2px 8px rgba(0, 0, 0, 0.08))");
+      
+      // Avatar circle (pink for all nodes, matching image style)
+      const avatarRadius = 20;
+      const avatarX = cardX + 16;
+      const avatarY = 0;
+      
+      node.append("circle")
+        .attr("r", avatarRadius)
+        .attr("cx", avatarX)
+        .attr("cy", avatarY)
+        .attr("fill", "#F9A8D4"); // Pink color matching image
+      
+      // Avatar initials or image
+      if (d.data.img) {
+        node.append("image")
+          .attr("xlink:href", d.data.img)
+          .attr("x", avatarX - avatarRadius)
+          .attr("y", avatarY - avatarRadius)
+          .attr("width", avatarRadius * 2)
+          .attr("height", avatarRadius * 2)
+          .attr("clip-path", `circle(${avatarRadius}px at ${avatarX}px ${avatarY}px)`);
+      } else {
+        // Show initials
+        const initials = getInitials(d.data.name);
         node.append("text")
-          .attr("dy", "-4")
-          .attr("x", -28)
-          .attr("text-anchor", "start")
+          .attr("x", avatarX)
+          .attr("y", avatarY)
+          .attr("text-anchor", "middle")
+          .attr("dy", "0.35em")
           .style("font-family", "Inter, sans-serif")
-          .style("font-size", "14px")
+          .style("font-size", "11px")
           .style("font-weight", "600")
-          .style("fill", "#111827")
-          .text(d.data.name);
-
+          .style("fill", "#BE185D") // Dark pink text
+          .text(initials);
+      }
+      
+      // Name text (positioned to the right of avatar)
+      const textX = avatarX + avatarRadius + 12;
+      node.append("text")
+        .attr("x", textX)
+        .attr("y", d.data.type === 'ai' ? -6 : 0)
+        .attr("text-anchor", "start")
+        .attr("dy", "0.35em")
+        .style("font-family", "Inter, sans-serif")
+        .style("font-size", d.data.type === 'ai' ? "14px" : "13px")
+        .style("font-weight", "500")
+        .style("fill", "#111827")
+        .text(d.data.name);
+      
+      // Role text for AI nodes
+      if (d.data.type === 'ai' && d.data.role) {
         node.append("text")
-          .attr("dy", "16")
-          .attr("x", -28)
+          .attr("x", textX)
+          .attr("y", 12)
           .attr("text-anchor", "start")
+          .attr("dy", "0.35em")
           .style("font-family", "Inter, sans-serif")
           .style("font-size", "11px")
           .style("fill", "#6B7280")
-          .text(d.data.role || "Agent");
-          
-        // Dynamic Icon Logic
-        const iconMap: Record<string, string> = {
-            "Route Planner": "🗺️",
-            "Delivery Coord": "🚚",
-            "Store Sentinel": "👁️",
-            "Staff Liaison": "💬",
-            "Review Responder": "⭐",
-            "Content Crafter": "🎨",
-            "Sales Associate": "💼",
-            "Inventory Intel": "🥀",
-            "QuickBooks Bot": "💰",
-            "Payroll Admin": "📅"
-        };
-        const icon = iconMap[d.data.name] || "🤖";
+          .text(d.data.role);
+      }
 
-        node.append("text")
-            .attr("x", -68)
-            .attr("y", 6)
-            .text(icon)
-            .attr("font-size", "18px");
-
-        // STATUS BADGES
+      // STATUS BADGES for AI nodes
+      if (d.data.type === 'ai') {
         const badgeWidth = 90;
+        const badgeX = cardX + cardWidth - badgeWidth - 8;
+        const badgeY = cardY + 8;
         
         // 1. Needs Attention (Yellow)
         if (d.data.status === 'needs_attention') {
             node.append("rect")
-                .attr("x", 90 - badgeWidth) 
-                .attr("y", -40)
+                .attr("x", badgeX) 
+                .attr("y", badgeY)
                 .attr("width", badgeWidth)
-                .attr("height", 20)
-                .attr("rx", 10)
-                .attr("fill", "#FBBF24") // Yellow-400
+                .attr("height", 18)
+                .attr("rx", 9)
+                .attr("fill", "#FBBF24")
                 .attr("stroke", "white")
-                .attr("stroke-width", 2);
+                .attr("stroke-width", 1.5);
             
             node.append("text")
-                .attr("x", 90 - (badgeWidth / 2))
-                .attr("y", -27)
+                .attr("x", badgeX + badgeWidth / 2)
+                .attr("y", badgeY + 9)
                 .attr("text-anchor", "middle")
-                .attr("font-size", "9px")
-                .attr("fill", "white")
-                .attr("font-weight", "bold")
+                .attr("dy", "0.35em")
+                .style("font-family", "Inter, sans-serif")
+                .style("font-size", "9px")
+                .style("fill", "white")
+                .style("font-weight", "600")
                 .style("text-transform", "uppercase")
+                .style("letter-spacing", "0.5px")
                 .text("Needs Attention");
         }
         
         // 2. Active (Green)
         if (d.data.status === 'active') {
              node.append("rect")
-                .attr("x", 90 - badgeWidth) 
-                .attr("y", -40)
+                .attr("x", badgeX) 
+                .attr("y", badgeY)
                 .attr("width", badgeWidth)
-                .attr("height", 20)
-                .attr("rx", 10)
-                .attr("fill", "#10B981") // Green-500
+                .attr("height", 18)
+                .attr("rx", 9)
+                .attr("fill", "#10B981")
                 .attr("stroke", "white")
-                .attr("stroke-width", 2);
+                .attr("stroke-width", 1.5);
             
             node.append("text")
-                .attr("x", 90 - (badgeWidth / 2))
-                .attr("y", -27)
+                .attr("x", badgeX + badgeWidth / 2)
+                .attr("y", badgeY + 9)
                 .attr("text-anchor", "middle")
-                .attr("font-size", "9px")
-                .attr("fill", "white")
-                .attr("font-weight", "bold")
+                .attr("dy", "0.35em")
+                .style("font-family", "Inter, sans-serif")
+                .style("font-size", "9px")
+                .style("fill", "white")
+                .style("font-weight", "600")
                 .style("text-transform", "uppercase")
+                .style("letter-spacing", "0.5px")
                 .text("Active");
         }
-
-      } else {
-        // Human Node
-        node.append("rect")
-          .attr("width", 160)
-          .attr("height", 56)
-          .attr("x", -80)
-          .attr("y", -28)
-          .attr("rx", 28)
-          .attr("fill", "white")
-          .attr("stroke", "#E5E7EB")
-          .attr("stroke-width", 1)
-          .style("filter", "drop-shadow(0 2px 4px rgb(0 0 0 / 0.05))");
-
-        node.append("circle")
-          .attr("r", 20)
-          .attr("cx", -55)
-          .attr("cy", 0)
-          .attr("fill", "#E5E7EB");
-          
-        if (d.data.img) {
-             node.append("image")
-            .attr("xlink:href", d.data.img)
-            .attr("x", -75)
-            .attr("y", -20)
-            .attr("width", 40)
-            .attr("height", 40)
-            .attr("clip-path", "circle(20px at 20px 20px)");
-        }
-        
-        node.append("text")
-          .attr("dy", "5")
-          .attr("x", -25)
-          .attr("text-anchor", "start")
-          .style("font-family", "Inter, sans-serif")
-          .style("font-size", "13px")
-          .style("font-weight", "500")
-          .style("fill", "#374151")
-          .text(d.data.name);
       }
     });
 
@@ -554,166 +461,58 @@ const Screen2OrgChart: React.FC = () => {
       }
   };
 
-  const handleBuilderSend = (text: string) => {
+  const handleBuilderSend = async (text: string) => {
       setBuilderMessages(prev => [...prev, {sender: 'user', text}]);
       setBuilderInput("");
       setIsBuilderTyping(true);
 
-      // --- BLUEPRINT LOGIC GENERATION ---
-      let newBlueprint: AgentBlueprint | null = null;
-      let systemResponse = "I've updated the mandate.";
+      // Build conversation history for Gemini
+      const conversationHistory = builderMessages.map(msg => ({
+        role: msg.sender === 'user' ? 'user' as const : 'model' as const,
+        parts: [{ text: msg.text }]
+      }));
 
-      // 1. ROUTE PLANNER
-      if (selectedAgent === 'Route Planner') {
-          if (text.toLowerCase().includes('cost') || text.toLowerCase().includes('efficiency')) {
-              systemResponse = "I have optimized the logic for 'Cost Minimization'. \n\nI will prioritize fuel efficiency and batching over delivery speed. I have explicitly forbidden the use of toll roads unless the delay exceeds 30 minutes.";
-              newBlueprint = {
-                  greenList: ["Calculate fastest routes avoiding tolls", "Group deliveries by neighborhood", "Batch orders to minimize mileage"],
-                  redList: ["I will NOT schedule deliveries past 6 PM", "I will NOT prioritize speed over safety", "I will NOT assign routes to off-duty drivers"],
-                  flowSteps: [{ label: "Orders In", type: 'trigger' }, { label: "Check Traffic", type: 'action' }, { label: "Is < 5PM?", type: 'decision' }, { label: "Optimize", type: 'action' }, { label: "Dispatch", type: 'end' }]
-              };
-          } else {
-              systemResponse = "I have configured the logic for 'Maximum Speed'. \n\nI will prioritize delivery windows and use toll roads freely. Premium orders will be routed first.";
-              newBlueprint = {
-                  greenList: ["Prioritize premium delivery windows", "Use toll roads for speed", "Real-time traffic rerouting"],
-                  redList: ["I will NOT delay premium orders", "I will NOT optimize for fuel saving"],
-                  flowSteps: [{ label: "Orders In", type: 'trigger' }, { label: "Prioritize VIP", type: 'action' }, { label: "Calc Fastest", type: 'action' }, { label: "Dispatch", type: 'end' }]
-              };
-          }
-      } 
-      // 2. STORE SENTINEL
-      else if (selectedAgent === 'Store Sentinel') {
-           if (text.toLowerCase().includes('conservative') || text.toLowerCase().includes('verified')) {
-               systemResponse = "Understood. I have set the posture to 'Verified Threat Only'. \n\nI will filter out transient motion (cars, animals) and only alert you if a human subject lingers for more than 30 seconds. This reduces false positives.";
-               newBlueprint = {
-                   greenList: ["Monitor refrigeration camera feeds", "Alert only if person lingers > 30s", "Log all entry/exit timestamps"],
-                   redList: ["I will NOT alert on transient motion (<5s)", "I will NOT contact police directly", "I will NOT record audio"],
-                   flowSteps: [{ label: "Motion Detect", type: 'trigger' }, { label: "Is Person?", type: 'decision' }, { label: "Linger > 30s?", type: 'decision' }, { label: "Alert Owner", type: 'action' }]
-               };
-           } else {
-               systemResponse = "Understood. I have set the posture to 'Hyper-Vigilant'. \n\nI will alert on ANY detected motion within the geofence. This ensures maximum security coverage but may increase notification volume.";
-               newBlueprint = {
-                   greenList: ["Monitor all camera feeds 24/7", "Alert on ANY motion > 2s", "Snapshot every entry"],
-                   redList: ["I will NOT ignore recurring false alarms", "I will NOT sleep during outages"],
-                   flowSteps: [{ label: "Motion Detect", type: 'trigger' }, { label: "Log Event", type: 'action' }, { label: "Alert Owner", type: 'action' }]
-               };
-           }
-      }
-      // 3. REVIEW RESPONDER
-      else if (selectedAgent === 'Review Responder') {
-           if (text.toLowerCase().includes('retention') || text.toLowerCase().includes('empathy')) {
-                systemResponse = "I have aligned the mandate with 'Customer Retention'. \n\nI am authorized to offer full refunds (up to $50) instantly for valid complaints. My tone will be apologetic and focused on making it right.";
-                newBlueprint = {
-                   greenList: ["Apologize unconditionally", "Offer immediate refund < $50", "Request second chance"],
-                   redList: ["I will NOT argue with customers", "I will NOT quote policy clauses", "I will NOT delay refunds"],
-                   flowSteps: [{ label: "New Review", type: 'trigger' }, { label: "Sentiment < 3?", type: 'decision' }, { label: "Draft Apology", type: 'action' }, { label: "Issue Refund", type: 'action' }]
-               };
-           } else {
-                systemResponse = "I have aligned the mandate with 'Policy Defense'. \n\nI will politely but firmly quote our terms of service. Refunds will require your manual approval. I will flag fake reviews for removal.";
-                newBlueprint = {
-                   greenList: ["Quote Terms of Service", "Flag suspicious reviews", "Escalate refunds to Manager"],
-                   redList: ["I will NOT admit fault prematurely", "I will NOT authorize refunds", "I will NOT ignore threats"],
-                   flowSteps: [{ label: "New Review", type: 'trigger' }, { label: "Verify Order", type: 'decision' }, { label: "Quote Policy", type: 'action' }, { label: "Escalate", type: 'end' }]
-               };
-           }
-      }
-      // 4. STAFF LIAISON
-      else if (selectedAgent === 'Staff Liaison') {
-           if (text.toLowerCase().includes('auto') || text.toLowerCase().includes('flexible')) {
-                systemResponse = "I have mapped the 'Flexible Autonomy' workflow. \n\nI will check the roster for conflicts, and if the covering staff member is qualified, I will approve the swap immediately and just notify you.";
-                newBlueprint = {
-                   greenList: ["Check staff qualification match", "Auto-approve valid swaps", "Update Google Calendar"],
-                   redList: ["I will NOT approve Overtime", "I will NOT approve < 12hr rest"],
-                   flowSteps: [{ label: "Swap Request", type: 'trigger' }, { label: "Skill Match?", type: 'decision' }, { label: "OT Check", type: 'decision' }, { label: "Auto-Approve", type: 'action' }]
-               };
-           } else {
-                systemResponse = "I have mapped the 'Manager Approval' workflow. \n\nI will validate the request and draft the schedule change, but I will REQUIRE your explicit button click to finalize it.";
-                newBlueprint = {
-                   greenList: ["Validate staff eligibility", "Draft schedule update", "Send approval card to Owner"],
-                   redList: ["I will NOT change roster without sign-off", "I will NOT discuss salaries"],
-                   flowSteps: [{ label: "Swap Request", type: 'trigger' }, { label: "Draft Change", type: 'action' }, { label: "Ask Owner", type: 'action' }, { label: "Wait Sign-off", type: 'end' }]
-               };
-           }
-      }
-      // 5. INVENTORY INTEL
-      else if (selectedAgent === 'Inventory Intel') {
-           if (text.toLowerCase().includes('aggressive') || text.toLowerCase().includes('waste')) {
-                systemResponse = "I have optimized for 'Waste Reduction'. \n\nIf I detect spoilage via camera, I will immediately trigger a 50% discount alert to Sales and notify the kitchen to use the stock.";
-                newBlueprint = {
-                   greenList: ["Scan visual feeds hourly", "Trigger 50% discount on age", "Notify kitchen usage"],
-                   redList: ["I will NOT order stock without budget", "I will NOT ignore expiring lots"],
-                   flowSteps: [{ label: "Visual Scan", type: 'trigger' }, { label: "Wilt > 20%?", type: 'decision' }, { label: "Discount 50%", type: 'action' }, { label: "Notify Staff", type: 'end' }]
-               };
-           } else {
-                systemResponse = "I have optimized for 'Premium Quality'. \n\nWe will not degrade the brand with wilted stock. I will flag imperfects for immediate disposal and re-order fresh stock.";
-                newBlueprint = {
-                   greenList: ["Strict visual quality check", "Flag for disposal", "Auto-draft reorder"],
-                   redList: ["I will NOT sell sub-par stock", "I will NOT apply discounts"],
-                   flowSteps: [{ label: "Visual Scan", type: 'trigger' }, { label: "Wilt > 10%?", type: 'decision' }, { label: "Mark Disposal", type: 'action' }, { label: "Re-order", type: 'end' }]
-               };
-           }
-      }
-      // 6. SALES ASSOCIATE
-      else if (selectedAgent === 'Sales Associate') {
-           if (text.toLowerCase().includes('volume') || text.toLowerCase().includes('rapid')) {
-                systemResponse = "I have configured for 'High Volume'. \n\nI will instantly respond to all inquiries with a standardized pricing PDF and a booking link. Speed is the priority.";
-                newBlueprint = {
-                   greenList: ["Instant PDF response", "Send booking calendar", "Follow up in 24hrs"],
-                   redList: ["I will NOT custom draft proposals", "I will NOT negotiate price"],
-                   flowSteps: [{ label: "Inquiry In", type: 'trigger' }, { label: "Match Category", type: 'action' }, { label: "Send PDF", type: 'action' }, { label: "Track Open", type: 'end' }]
-               };
-           } else {
-                systemResponse = "I have configured for 'High Touch'. \n\nI will ask 2-3 qualifying questions (Date? Budget? Theme?) before sending any pricing. I will draft a custom proposal for your approval.";
-                newBlueprint = {
-                   greenList: ["Ask qualifying questions", "Draft custom proposal", "Personalize email intro"],
-                   redList: ["I will NOT send generic pricing", "I will NOT spam follow-ups"],
-                   flowSteps: [{ label: "Inquiry In", type: 'trigger' }, { label: "Qualify Lead", type: 'action' }, { label: "Draft Quote", type: 'action' }, { label: "Review", type: 'end' }]
-               };
-           }
-      }
-      // 7. QUICKBOOKS BOT
-      else if (selectedAgent === 'QuickBooks Bot') {
-           if (text.toLowerCase().includes('auto') || text.toLowerCase().includes('full')) {
-                systemResponse = "I have enabled 'Full Autonomy'. \n\nI will categorize all transactions based on vendor history and matching rules. I will only flag new, unknown vendors.";
-                newBlueprint = {
-                   greenList: ["Match vendor history", "Auto-categorize < $1000", "Sync receipt images"],
-                   redList: ["I will NOT pay bills", "I will NOT change tax codes"],
-                   flowSteps: [{ label: "Transaction", type: 'trigger' }, { label: "Match Rule?", type: 'decision' }, { label: "Categorize", type: 'action' }, { label: "Sync", type: 'end' }]
-               };
-           } else {
-                systemResponse = "I have enabled 'Review Mode'. \n\nI will draft the categorization but require your confirmation for anything over $100. I will prioritize accuracy over speed.";
-                newBlueprint = {
-                   greenList: ["Draft categorization", "Flag > $100", "Detect duplicates"],
-                   redList: ["I will NOT commit without review", "I will NOT guess categories"],
-                   flowSteps: [{ label: "Transaction", type: 'trigger' }, { label: "Is > $100?", type: 'decision' }, { label: "Flag Review", type: 'action' }, { label: "Wait", type: 'end' }]
-               };
-           }
-      }
+      try {
+        // Call Gemini API for agent builder
+        const result = await buildAgent(selectedAgent || 'Agent', text, conversationHistory);
+        
+        // Use Gemini response and strip markdown
+        let systemResponse = result.response;
+        systemResponse = systemResponse
+          .replace(/\*\*(.*?)\*\*/g, '$1')  // Remove **bold**
+          .replace(/\*(.*?)\*/g, '$1')      // Remove *italic*
+          .replace(/__(.*?)__/g, '$1')     // Remove __bold__
+          .replace(/_(.*?)_/g, '$1')       // Remove _italic_
+          .replace(/`(.*?)`/g, '$1')       // Remove `code`
+          .replace(/#{1,6}\s/g, '')        // Remove headers
+          .trim();
+        
+        // Use blueprint from Gemini if provided, otherwise use a default structure
+        const newBlueprint: AgentBlueprint = result.blueprint || {
+          greenList: ["Execute assigned tasks", "Follow operational guidelines"],
+          redList: ["Do not violate safety protocols", "Do not exceed budget limits"],
+          flowSteps: [
+            { label: "Trigger", type: 'trigger' },
+            { label: "Process", type: 'action' },
+            { label: "Complete", type: 'end' }
+          ]
+        };
 
-      // Fallback for generic
-      if (!newBlueprint) {
-           systemResponse = "I've drafted a standard operating procedure for this agent. Please review the mandate.";
-           newBlueprint = {
-               greenList: ["Standard Operation A", "Standard Operation B"],
-               redList: ["Do not violate safety", "Do not exceed budget"],
-               flowSteps: [{ label: "Trigger", type: 'trigger' }, { label: "Process", type: 'action' }, { label: "Finish", type: 'end' }]
-           }
-      }
+        // Update UI
+        setIsBuilderTyping(false);
+        setBuilderMessages(prev => [...prev, {sender: 'system', text: systemResponse}]);
+        setBlueprint(newBlueprint);
+        setBuilderStep(1); // Advance step
 
-      // Chat Delay Simulation
-      setTimeout(() => {
-          setIsBuilderTyping(false);
-          setBuilderMessages(prev => [...prev, {sender: 'system', text: systemResponse}]);
-          setBlueprint(newBlueprint!);
-          setBuilderStep(1); // Advance step
-      }, 1200);
-
-      // Final Deployment
-      if (builderStep === 1 || builderStep === 0) {
-           setTimeout(() => {
-              if(selectedAgent) updateAgentStatus(selectedAgent, "active");
-              setIsConfigured(true);
-          }, 2500);
+        // Final Deployment after a delay
+        setTimeout(() => {
+          if(selectedAgent) updateAgentStatus(selectedAgent, "active");
+          setIsConfigured(true);
+        }, 2000);
+      } catch (error) {
+        console.error("Error calling Gemini:", error);
+        setIsBuilderTyping(false);
+        setBuilderMessages(prev => [...prev, {sender: 'system', text: "I encountered an error processing your request. Please try again."}]);
       }
   };
 
@@ -830,8 +629,11 @@ const Screen2OrgChart: React.FC = () => {
                        {teamChatMessages.map((msg, idx) => (
                            <div key={idx} className={`flex gap-3 ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                                 {msg.sender === 'system' && (
-                                    <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center text-purple-600 shrink-0 mt-1">
-                                       <Sparkles size={16} />
+                                    <div className="flex flex-col items-center shrink-0 mt-1">
+                                       <div className="w-8 h-8 rounded-full flex items-center justify-center overflow-hidden bg-white border border-gray-200">
+                                          <img src="/Lumi.png" alt="Lumi" className="w-full h-full object-cover" />
+                                       </div>
+                                       <span className="text-[10px] text-gray-500 mt-1 font-medium">Lumi</span>
                                     </div>
                                 )}
                                 <div className={`max-w-[80%] p-3 rounded-2xl text-[14px] leading-relaxed shadow-sm ${
@@ -969,8 +771,11 @@ const Screen2OrgChart: React.FC = () => {
                              {builderMessages.map((msg, i) => (
                                  <div key={i} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                                      {msg.sender === 'system' && (
-                                         <div className="w-6 h-6 rounded-full bg-purple-100 flex items-center justify-center text-purple-600 mr-2 mt-1 shrink-0">
-                                             <Sparkles size={12} />
+                                         <div className="flex flex-col items-center mr-2 mt-1 shrink-0">
+                                             <div className="w-6 h-6 rounded-full flex items-center justify-center overflow-hidden bg-white border border-gray-200">
+                                                 <img src="/Lumi.png" alt="Lumi" className="w-full h-full object-cover" />
+                                             </div>
+                                             <span className="text-[9px] text-gray-500 mt-0.5 font-medium">Lumi</span>
                                          </div>
                                      )}
                                      <div className={`p-3 text-sm rounded-2xl max-w-[90%] shadow-sm whitespace-pre-wrap ${msg.sender === 'user' ? 'bg-white text-gray-900 border border-gray-200' : 'bg-purple-600 text-white'}`}>
@@ -980,8 +785,8 @@ const Screen2OrgChart: React.FC = () => {
                              ))}
                              {isBuilderTyping && (
                                  <div className="flex justify-start">
-                                     <div className="w-6 h-6 rounded-full bg-purple-100 flex items-center justify-center text-purple-600 mr-2 mt-1 shrink-0">
-                                         <Sparkles size={12} />
+                                     <div className="w-6 h-6 rounded-full flex items-center justify-center mr-2 mt-1 shrink-0 overflow-hidden bg-white border border-gray-200">
+                                         <img src="/Lumi.png" alt="Lumi" className="w-full h-full object-cover" />
                                      </div>
                                      <div className="bg-gray-100 p-3 rounded-2xl rounded-tl-sm w-12 flex items-center justify-center">
                                          <div className="flex space-x-1">

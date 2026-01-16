@@ -10,14 +10,13 @@ interface SidebarProps {
 
 const Sidebar: React.FC<SidebarProps> = ({ currentScreen, onScreenChange }) => {
   const navItems = [
-    { id: Screen.CONSULTANT, icon: FilePlus, label: 'Workspace' },
+    { id: Screen.CONSULTANT, icon: FilePlus, label: 'Create a Task' },
     { id: Screen.ORG_CHART, icon: Users, label: 'Your Team' },
   ];
 
   const operationsItems = [
     { id: Screen.CONTROL_ROOM, icon: MonitorPlay, label: 'Control Room' },
     // { id: Screen.TEST_SUITE, icon: FlaskConical, label: 'Test Suite' }, // Temporarily hidden
-    { id: Screen.ANALYTICS, icon: BarChart3, label: 'Analytics' },
   ];
 
   return (
