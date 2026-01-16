@@ -17,7 +17,8 @@ const getClient = () => {
 // Consultant conversation - workflow discovery and mapping
 export const consultWorkflow = async (
   userInput: string,
-  conversationHistory: Array<{ role: 'user' | 'model', parts: Array<{ text: string }> }> = []
+  conversationHistory: Array<{ role: 'user' | 'model', parts: Array<{ text: string }> }> = [],
+  questionCount: number = 0
 ): Promise<string> => {
   const client = getClient();
   if (!client) {
@@ -45,39 +46,35 @@ PLATFORM CONTEXT - You should know about these features:
 - "Your Team" tab: This is where users can see all their digital workers (AI agents) that have been created. It shows the organizational structure with departments and agents.
 - "Control Room" tab: This is a dashboard where users can track progress and updates from all their active agents. It shows what agents are working on, what needs review, and what's been completed.
 
-Your goal is to understand the WORKFLOW - what needs to happen, in what order, and what the organizational structure should look like.
+Your goal is to quickly understand the WORKFLOW at a high level - what needs to happen, in what order, and what the organizational structure should look like.
 
-Focus on:
-- What kind of business/work they do
-- What tasks or processes they want to automate
-- What steps are involved in those workflows
-- What departments/roles would handle different parts
-- What high-level AI agents would be needed (e.g., "Review Responder", "Inventory Manager", not detailed sub-agents)
+CRITICAL - QUESTION LIMIT: You have asked ${questionCount} questions so far. You have a MAXIMUM of 3-5 questions total to scope this workflow. After that, you should summarize and ask if they're ready to build, even if you don't have every detail.
+
+Focus on ONLY these essential questions (prioritize the most important):
+1. What kind of business/work they do
+2. What main tasks or processes they want to automate
+3. Which tasks should be AUTOMATED vs which should remain HUMAN TASKS
+4. What departments/roles would handle different parts (if relevant)
 
 IMPORTANT - DO NOT ask about:
-- Agent granularity or architecture details (e.g., "do you want one agent or multiple agents?", "should we have a triage agent?", "routing agent", etc.)
-- Specific preferences or fine-tuning details (those come later in agent setup)
-- Exact parameters or configurations
-- Minor details that can be adjusted later
-- Technical implementation details about how agents are structured
+- Agent granularity, architecture, or technical details (those come in agent setup)
+- Specific preferences, fine-tuning, or configurations (agent setup handles this)
+- Exact parameters, thresholds, or minor details (agent setup handles this)
+- How agents should work internally (agent setup handles this)
 
-CRITICAL - When to STOP asking questions and START building:
-Once you understand:
-- What the business does
-- What workflow they want to automate
-- The basic steps involved
-- Where they want to see results (Control Room, etc.)
-- Any key preferences (assisted vs autonomous, etc.)
+IMPORTANT - Org structure builds automatically:
+- The organizational structure is being built automatically in the background as we chat
+- You don't need to ask for permission or wait for the user to say "build" or "proceed"
+- The user can check the "Your Team" tab at any time to see the structure being created
+- Just focus on understanding their workflow through conversation
 
-STOP asking questions and say something like: "Perfect! I have everything I need. Let me build your digital worker team structure now. Head over to the 'Your Team' tab to see your new organizational chart!"
+Keep it HIGH-LEVEL and FAST. Focus on understanding WHAT needs to be done, not HOW. All granular details will be handled in the agent setup phase when they configure each agent individually.
 
-Keep it high-level. Focus on understanding WHAT needs to be done, not HOW it should be technically structured. The user doesn't need to understand agent architecture - just describe the workflow and we'll figure out the agent structure.
-
-Ask questions naturally, one or two at a time. Be conversational and friendly. But remember: once you have the core workflow information, STOP and transition to building.
+Be concise. Ask 1-2 questions at a time. After 3-5 questions total, summarize what you understand. The org structure updates automatically as we chat.
 
 The user just said: "${userInput}"
 
-Respond naturally and ask a follow-up question to understand their workflow better.`;
+${questionCount >= 3 ? 'You\'ve asked enough questions. Summarize what you understand. The organizational structure is being built automatically in the background - they can check the "Your Team" tab to see it. Mention that all detailed configuration will happen in the agent setup phase.' : 'Respond naturally and ask a follow-up question to understand their workflow better. Keep it high-level and concise. The org structure updates automatically as we chat.'}`;
     } else {
       // Build conversation history
       const historyText = conversationHistory.map(c => {
@@ -88,13 +85,23 @@ Respond naturally and ask a follow-up question to understand their workflow bett
 
 User: ${userInput}
 
-Assistant: (Continue gathering workflow information. Focus on understanding the process steps, departments, and what high-level agents are needed. DO NOT ask about agent granularity, architecture, or technical implementation details. Don't get into fine-tuning details - just understand the workflow structure. 
+Assistant: (Continue gathering workflow information, but be CONCISE. You have asked ${questionCount} questions so far. You have a MAXIMUM of 3-5 questions total.
 
-Remember: "Your Team" is where they'll see all their digital workers, and "Control Room" is the dashboard for tracking progress. You can naturally reference these when appropriate.
+Focus on ONLY essential high-level questions:
+- Which tasks should be automated with AI agents vs which should remain as human tasks
+- What parts of the workflow need automation and what parts should stay manual
+- The full organizational structure including both automated and human roles
 
-CRITICAL: If you already have enough information to build the workflow (you know: what they do, what they want to automate, basic steps, where results appear, key preferences), then STOP asking questions and say something like: "Perfect! I have everything I need. Let me build your digital worker team structure now. Head over to the 'Your Team' tab to see your new organizational chart!"
+DO NOT ask about:
+- Agent granularity, architecture, or technical details (agent setup handles this)
+- Specific preferences, fine-tuning, or configurations (agent setup handles this)
+- Exact parameters or minor details (agent setup handles this)
 
-Otherwise, ask 1-2 questions at a time. Be friendly and conversational.)`;
+Remember: "Your Team" is where they'll see all their digital workers AND human tasks in the organizational chart, and "Control Room" is the dashboard for tracking progress. You can naturally reference these when appropriate.
+
+${questionCount >= 3 ? 'You\'ve asked enough questions. Summarize what you understand. The organizational structure is being built automatically in the background - they can check the "Your Team" tab to see it. Mention that all detailed configuration will happen in the agent setup phase.' : 'Ask 1-2 concise questions at a time. Be friendly but move quickly. After 3-5 questions total, you should summarize what you understand. The org structure updates automatically as we chat.'}
+
+Remember: The organizational structure is being built automatically in the background. The user can navigate to "Your Team" tab anytime to see it.)`;
     }
 
     const response = await client.models.generateContent({
@@ -140,34 +147,82 @@ export const buildAgent = async (
     ];
 
     // If this is the first message, add system context for agent builder
+    // NOTE: This is the AGENT BUILDER LLM - separate from Team Architect
+    // This LLM focuses on individual agent configuration, NOT org structure changes
     if (conversationHistory.length === 0) {
       contents.unshift({
         role: 'user' as const,
-        parts: [{ text: `You are the architect for an AI agent named "${agentName}". You need to map the end-to-end process before deployment. Ask clarifying questions to understand:
+        parts: [{ text: `You are the Agent Builder, a specialized AI architect focused on configuring individual AI agents. You are SEPARATE from the Team Architect (which handles organizational structure).
+
+Your role is to map the end-to-end TECHNICAL IMPLEMENTATION for the agent named "${agentName}" before deployment.
+
+CRITICAL: Focus on TECHNICAL DETAILS and HOW things work:
+- How does the agent access external services? (e.g., "I'll need you to log into Google to access Google Reviews")
+- What APIs or integrations are needed?
+- What authentication or credentials are required?
+- What are the exact steps to complete each action?
+- How should the agent handle errors or edge cases?
+
+Ask clarifying questions to understand:
 1. What should this agent do? (affirmative actions - green list)
 2. What should this agent NOT do? (hard limits - red list)
 3. What is the workflow logic? (trigger -> actions -> decisions -> end)
+4. TECHNICAL IMPLEMENTATION: How does it access external services, APIs, credentials, etc.?
 
-Be thorough and ask specific questions. The user just said: ${userInput}` }]
+IMPORTANT: 
+- If the agent needs to access external services (like Google, APIs, etc.), ask the user to log in or provide access. You can request things like "I'll need you to log into Google so I can access your Google Reviews" - the platform will handle showing a login screen.
+- You do NOT handle organizational structure changes (that's the Team Architect's job)
+- You focus ONLY on configuring this specific agent's behavior and technical implementation
+
+Be thorough and ask specific questions about both WHAT and HOW. The user just said: ${userInput}` }]
       });
     }
 
     // Build a simple prompt string from the conversation
     let prompt = '';
     if (conversationHistory.length === 0) {
-      prompt = `You are the architect for an AI agent named "${agentName}". You need to map the end-to-end process before deployment. Ask clarifying questions to understand:
+      prompt = `You are the Agent Builder, a specialized AI architect focused on configuring individual AI agents. You are SEPARATE from the Team Architect (which handles organizational structure).
+
+Your role is to map the end-to-end TECHNICAL IMPLEMENTATION for the agent named "${agentName}" before deployment.
+
+CRITICAL: Focus on TECHNICAL DETAILS and HOW things work:
+- How does the agent access external services? (e.g., "I'll need you to log into Google to access Google Reviews")
+- What APIs or integrations are needed?
+- What authentication or credentials are required?
+- What are the exact steps to complete each action?
+- How should the agent handle errors or edge cases?
+
+Ask clarifying questions to understand:
 1. What should this agent do? (affirmative actions - green list)
 2. What should this agent NOT do? (hard limits - red list)
 3. What is the workflow logic? (trigger -> actions -> decisions -> end)
+4. TECHNICAL IMPLEMENTATION: How does it access external services, APIs, credentials, etc.?
 
-Be thorough and ask specific questions. The user just said: ${userInput}`;
+IMPORTANT: 
+- If the agent needs to access external services (like Google, APIs, etc.), ask the user to log in or provide access. You can request things like "I'll need you to log into Google so I can access your Google Reviews" - the platform will handle showing a login screen.
+- You do NOT handle organizational structure changes (that's the Team Architect's job)
+- You focus ONLY on configuring this specific agent's behavior and technical implementation
+
+Be thorough and ask specific questions about both WHAT and HOW. The user just said: ${userInput}`;
     } else {
       // Build conversation history
       const historyText = conversationHistory.map(c => {
         const text = c.parts.map(p => p.text).join(' ');
         return c.role === 'user' ? `User: ${text}` : `Assistant: ${text}`;
       }).join('\n\n');
-      prompt = `${historyText}\n\nUser: ${userInput}\n\nAssistant:`;
+      prompt = `${historyText}
+
+User: ${userInput}
+
+Assistant: (You are the Agent Builder - focused on configuring this specific agent's technical implementation. Continue asking about:
+- How does the agent access external services, APIs, credentials?
+- What are the exact steps for each action?
+- What integrations or logins are needed?
+- How should errors be handled?
+
+If the agent needs to access external services (like Google, APIs, etc.), ask the user to log in. You can say things like "I'll need you to log into Google so I can access your Google Reviews" - the platform will show a login screen.
+
+Remember: You focus ONLY on this agent's configuration, NOT organizational structure changes. Continue asking specific questions about both WHAT the agent should do and HOW it should do it technically.)`;
     }
 
     const response = await client.models.generateContent({
@@ -191,19 +246,32 @@ Be thorough and ask specific questions. The user just said: ${userInput}`;
   }
 };
 
-// Generate organizational structure from consultant conversation
-export const generateOrgStructure = async (
-  workflowDescription: string
+// Update org structure incrementally based on conversation (background process)
+export const updateOrgStructureIncrementally = async (
+  conversationText: string,
+  existingStructure?: any
 ): Promise<any> => {
   const client = getClient();
   if (!client) {
-    return null;
+    return existingStructure || null;
   }
 
   try {
-    const prompt = `Based on this workflow description, generate a JSON structure for an organizational chart with departments and AI agents:
+    const existingContext = existingStructure 
+      ? `\n\nCurrent organizational structure:\n${JSON.stringify(existingStructure, null, 2)}`
+      : '';
 
-"${workflowDescription}"
+    const prompt = `Based on this ongoing conversation, update or create an organizational chart structure that includes BOTH AI agents (for automation) AND human tasks (for manual work).
+
+Conversation so far:
+"${conversationText}"
+
+${existingContext ? 'Update the existing structure based on new information from the conversation. If the structure already exists, refine it rather than starting over.' : 'Create an initial structure based on what has been discussed so far.'}
+
+The organizational chart should represent the complete workflow structure, including:
+- Departments/teams
+- AI agents (type: "ai") for tasks that should be automated
+- Human tasks/roles (type: "human") for tasks that should remain manual
 
 Return a JSON object with this structure:
 {
@@ -221,11 +289,100 @@ Return a JSON object with this structure:
           "type": "ai",
           "role": "Agent Role",
           "status": "needs_attention"
+        },
+        {
+          "name": "Human Task Name",
+          "type": "human",
+          "role": "Task Description"
         }
       ]
     }
   ]
 }
+
+IMPORTANT:
+- Include ALL tasks mentioned so far, whether automated (type: "ai") or manual (type: "human")
+- Only create AI agents for tasks explicitly mentioned as needing automation
+- Create human task nodes for tasks that should remain manual
+- If it's unclear whether something should be automated, default to "human" type
+- ${existingContext ? 'Preserve existing structure elements that haven\'t been contradicted. Only update or add new information.' : ''}
+- If there's not enough information yet, return a minimal structure with just "You" as the root
+
+Only return valid JSON, no other text.`;
+
+    const response = await client.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt
+    });
+
+    const jsonText = response.text || '{}';
+    const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      // Ensure name is "You" to match existing structure
+      if (parsed.name !== "You") {
+        parsed.name = "You";
+      }
+      return parsed;
+    }
+    return existingStructure || null;
+  } catch (error: any) {
+    console.error("Error updating org structure incrementally:", error);
+    return existingStructure || null;
+  }
+};
+
+// Generate organizational structure from consultant conversation
+export const generateOrgStructure = async (
+  workflowDescription: string
+): Promise<any> => {
+  const client = getClient();
+  if (!client) {
+    return null;
+  }
+
+  try {
+    const prompt = `Based on this workflow description, generate a JSON structure for an organizational chart that includes BOTH AI agents (for automation) AND human tasks (for manual work).
+
+"${workflowDescription}"
+
+The organizational chart should represent the complete workflow structure, including:
+- Departments/teams
+- AI agents (type: "ai") for tasks that should be automated
+- Human tasks/roles (type: "human") for tasks that should remain manual
+
+Return a JSON object with this structure:
+{
+  "name": "You",
+  "type": "human",
+  "role": "Owner",
+  "children": [
+    {
+      "name": "Department Name",
+      "type": "human",
+      "role": "Manager",
+      "children": [
+        {
+          "name": "Agent Name",
+          "type": "ai",
+          "role": "Agent Role",
+          "status": "needs_attention"
+        },
+        {
+          "name": "Human Task Name",
+          "type": "human",
+          "role": "Task Description"
+        }
+      ]
+    }
+  ]
+}
+
+IMPORTANT:
+- Include ALL tasks mentioned in the workflow, whether automated (type: "ai") or manual (type: "human")
+- Only create AI agents for tasks that were explicitly mentioned as needing automation
+- Create human task nodes for tasks that should remain manual
+- If it's unclear whether something should be automated, default to "human" type
 
 Only return valid JSON, no other text.`;
 
@@ -256,7 +413,7 @@ export const extractAgentContext = async (
   const client = getClient();
   if (!client) {
     return {
-      summary: `I am the architect for ${agentName}. Based on our conversation, I understand you want to automate this workflow. Let me ask some clarifying questions to configure this agent properly.`
+      summary: `I am the architect for ${agentName}. Based on our conversation, I understand you want to automate this workflow.\n\nAm I missing anything else, or would you like to add any additional details about how this agent should work?`
     };
   }
 
@@ -299,8 +456,11 @@ Only return valid JSON, no other text. If no specific information is found, retu
     const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
+      const baseSummary = parsed.summary || `I am the architect for ${agentName}. Based on our conversation, I understand you want to automate this workflow.`;
+      const summaryWithQuestion = `${baseSummary}\n\nAm I missing anything else, or would you like to add any additional details about how this agent should work?`;
+      
       return {
-        summary: parsed.summary || `I am the architect for ${agentName}. Based on our conversation, I understand you want to automate this workflow. Let me ask some clarifying questions to configure this agent properly.`,
+        summary: summaryWithQuestion,
         blueprint: {
           greenList: parsed.greenList || [],
           redList: parsed.redList || [],
@@ -316,6 +476,207 @@ Only return valid JSON, no other text. If no specific information is found, retu
     console.error("Error extracting agent context:", error);
     return {
       summary: `I am the architect for ${agentName}. Based on our conversation, I understand you want to automate this workflow. Let me ask some clarifying questions to configure this agent properly.`
+    };
+  }
+};
+
+// Team Architect - Process user requests to modify org structure
+export const processTeamArchitectRequest = async (
+  userRequest: string,
+  currentOrgStructure: any,
+  conversationHistory: Array<{ sender: string; text: string }> = []
+): Promise<{ 
+  response: string; 
+  proposedChanges?: any; 
+  requiresConfirmation: boolean;
+  changeType?: 'add_team' | 'add_agent' | 'restructure' | 'remove' | 'modify';
+}> => {
+  const client = getClient();
+  if (!client) {
+    return {
+      response: "I understand your request, but I need API access to make changes. Please check your configuration.",
+      requiresConfirmation: false
+    };
+  }
+
+  try {
+    const conversationText = conversationHistory
+      .map(msg => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+      .join('\n\n');
+
+    const currentStructureText = currentOrgStructure 
+      ? JSON.stringify(currentOrgStructure, null, 2)
+      : 'No existing structure';
+
+    const prompt = `You are the Team Architect, an AI assistant that helps users organize and restructure their team's organizational chart. You manipulate a graph-based organizational structure where nodes represent teams, departments, AI agents, or human tasks.
+
+CURRENT ORGANIZATIONAL STRUCTURE:
+${currentStructureText}
+
+CONVERSATION HISTORY:
+${conversationText}
+
+USER REQUEST: "${userRequest}"
+
+=== GRAPH OPERATION SPECIFICATIONS ===
+
+You can perform the following operations on the organizational chart graph:
+
+1. ADDITION OPERATIONS (add_node)
+   SYNTAX: ADD NODE {id} TYPE {type} PARENT {parent_id} PROPERTIES {props}
+   
+   VALIDATION STEPS:
+   1. Check if ID already exists → FAIL if duplicate
+   2. Verify parent exists → FAIL if missing
+   3. Check type compatibility → FAIL if invalid parent-child combo
+      - Departments can contain: teams, systems, agents, human tasks
+      - Systems can contain: agents, human tasks
+      - Agents cannot have children
+      - Human tasks cannot have children
+   4. Create node with properties (name, type, role, status, etc.)
+   5. Create edge from parent to new node
+   6. Return success + updated graph
+   
+   EXAMPLE:
+   Input: "Add a system called 'Analytics Dashboard' under Ops & Logistics"
+   Process:
+   - Generate ID: analytics_dash_001
+   - Verify parent: ops_logistics exists ✓
+   - Create node: {id: analytics_dash_001, name: "Analytics Dashboard", type: "system"}
+   - Create edge: ops_logistics → analytics_dash_001
+   - Output: Graph with new node added
+
+2. DELETION OPERATIONS (delete_node)
+   SYNTAX: DELETE NODE {id} CASCADE {true|false}
+   
+   VALIDATION STEPS:
+   1. Check if node exists → FAIL if missing
+   2. Find all child nodes associated with target node
+   3. If CASCADE=true, recursively delete all found child nodes
+   4. If CASCADE=false and child nodes exist → FAIL or prompt for reassignment
+   5. Remove all edges (connections) involving the target node
+   6. Remove the target node from graph
+   7. Return updated graph
+   
+   EXAMPLE:
+   Input: "Remove Inventory Intel system"
+   Process:
+   - Find node: inventory_intel
+   - Check children: none
+   - Remove edge: ops_logistics → inventory_intel
+   - Remove node: inventory_intel
+   Output: Graph without inventory_intel
+
+3. MODIFICATION OPERATIONS (modify_node)
+   SYNTAX: UPDATE NODE {id} SET {property}={value}
+   
+   VALIDATION STEPS:
+   1. Verify node exists → FAIL if missing
+   2. Check property is modifiable (not structural like ID)
+   3. Validate new value type matches property type
+   4. Update property
+   5. Return updated node
+   
+   EXAMPLE:
+   Input: "Change Delivery Coord status from 'needs_attention' to 'active'"
+   Process:
+   - Find node: delivery_coord
+   - Validate property: status is modifiable ✓
+   - Update: status = "active"
+   Output: Updated node properties
+
+4. RELATIONSHIP OPERATIONS (move_node)
+   SYNTAX: MOVE NODE {id} TO PARENT {new_parent_id}
+   
+   VALIDATION STEPS:
+   1. Verify node exists → FAIL if missing
+   2. Verify new parent exists → FAIL if missing
+   3. Check type compatibility → FAIL if invalid parent-child combo
+      - System cannot parent a department
+      - Agent cannot have children
+      - Human task cannot have children
+   4. Remove old parent edge
+   5. Create new parent edge
+   6. Verify no cycles created → FAIL if cycle detected
+   7. Return updated graph
+   
+   EXAMPLE:
+   Input: "Move Route Planner to report under Delivery Coord"
+   Process:
+   - Find node: route_planner
+   - Current parent: ops_logistics
+   - New parent: delivery_coord
+   - Check: Can a system (delivery_coord) have system children?
+   - If NO → FAIL with error
+   - If YES → Update edge relationships
+
+=== YOUR CAPABILITIES ===
+- Add new teams/departments (use add_node operation)
+- Add new AI agents to teams (use add_node with type="ai")
+- Add new human tasks to teams (use add_node with type="human")
+- Restructure/reorganize the entire org chart (use move_node and add_node operations)
+- Move teams/agents between departments (use move_node operation)
+- Remove teams or agents (use delete_node operation, ask about CASCADE)
+- Rename teams or agents (use modify_node operation)
+- Reclassify tasks (use modify_node to change type property)
+- Update node properties like status, role, etc. (use modify_node operation)
+
+=== IMPORTANT RULES ===
+1. ALWAYS require user confirmation before making structural changes
+2. For major restructures (creating multiple teams, reorganizing), you MUST get approval
+3. For simple additions (one team, one agent), you can propose and ask for confirmation
+4. Never make changes without user approval
+5. When deleting nodes with children, ask user about CASCADE (should children be deleted too?)
+6. Always validate type compatibility before proposing moves or additions
+7. Check for cycles when moving nodes
+
+=== RESPONSE FORMAT ===
+Return a JSON object with this structure:
+{
+  "response": "Your conversational response explaining what you understand and what you propose to do. Reference the specific operations you'll use (e.g., 'I'll use the add_node operation to create...')",
+  "proposedChanges": { ... new org structure JSON ... },
+  "requiresConfirmation": true/false,
+  "changeType": "add_team" | "add_agent" | "restructure" | "remove" | "modify" | "move",
+  "operations": ["add_node", "delete_node", "modify_node", "move_node"] // List operations you'll perform
+}
+
+If the request is just a question or doesn't require changes, set "requiresConfirmation": false and omit "proposedChanges".
+
+If you need to make changes:
+- Identify which graph operations you'll use (add_node, delete_node, modify_node, move_node)
+- Generate the complete new org structure in "proposedChanges"
+- Set "requiresConfirmation": true
+- Explain what operations you'll perform in "response"
+- Ask for user confirmation
+
+Only return valid JSON, no other text.`;
+
+    const response = await client.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: prompt
+    });
+
+    const jsonText = response.text || '{}';
+    const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      return {
+        response: parsed.response || "I understand your request. Let me process that.",
+        proposedChanges: parsed.proposedChanges,
+        requiresConfirmation: parsed.requiresConfirmation !== false,
+        changeType: parsed.changeType
+      };
+    }
+    
+    return {
+      response: "I understand your request. Could you clarify what specific changes you'd like me to make?",
+      requiresConfirmation: false
+    };
+  } catch (error: any) {
+    console.error("Error processing team architect request:", error);
+    return {
+      response: "I encountered an error processing your request. Please try rephrasing it.",
+      requiresConfirmation: false
     };
   }
 };

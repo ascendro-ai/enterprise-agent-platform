@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowRight, Plus, Image as ImageIcon, Play, Command, Mic } from 'lucide-react';
+import { ArrowRight, Plus, Image as ImageIcon, Play, Mic } from 'lucide-react';
 import { ChatMessage } from '../types';
-import { consultWorkflow, generateOrgStructure } from '../services/geminiService';
+import { consultWorkflow, generateOrgStructure, updateOrgStructureIncrementally } from '../services/geminiService';
 
 // Type declaration for Web Speech API
 interface SpeechRecognition extends EventTarget {
@@ -31,7 +31,7 @@ interface Screen1ConsultantProps {
   onMessagesChange?: (messages: ChatMessage[]) => void;
 }
 
-const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate, onNavigateToTeam, messages: propMessages, onMessagesChange }) => {
+const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate, onNavigateToTeam, messages: propMessages, onMessagesChange, currentOrgChart }) => {
   const [input, setInput] = useState('');
   const [conversationStep, setConversationStep] = useState(0); 
   const [messages, setMessages] = useState<ChatMessage[]>(propMessages || []);
@@ -53,6 +53,7 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
   
   // Voice recognition state
   const [isListening, setIsListening] = useState(false);
+  const [speechRecognitionAvailable, setSpeechRecognitionAvailable] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   
 
@@ -72,36 +73,82 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
     if (typeof window !== 'undefined') {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       if (SpeechRecognition) {
-        const recognition = new SpeechRecognition();
-        recognition.continuous = false;
-        recognition.interimResults = false;
-        recognition.lang = 'en-US';
-        
-        recognition.onresult = (event: any) => {
-          const transcript = Array.from(event.results)
-            .map((result: any) => result[0].transcript)
-            .join('');
-          // Set the transcribed text in the input field
-          setInput(transcript);
-          setIsListening(false);
-        };
-        
-        recognition.onerror = (event: any) => {
-          console.error('Speech recognition error:', event.error);
-          setIsListening(false);
-        };
-        
-        recognition.onend = () => {
-          setIsListening(false);
-        };
-        
-        recognitionRef.current = recognition;
+        try {
+          const recognition = new SpeechRecognition();
+          recognition.continuous = false;
+          recognition.interimResults = true; // Enable interim results
+          recognition.lang = 'en-US';
+          
+          recognition.onstart = () => {
+            console.log('Speech recognition started');
+            setIsListening(true);
+          };
+          
+          recognition.onresult = (event: any) => {
+            let interimTranscript = '';
+            let finalTranscript = '';
+            
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+              const transcript = event.results[i][0].transcript;
+              if (event.results[i].isFinal) {
+                finalTranscript += transcript + ' ';
+              } else {
+                interimTranscript += transcript;
+              }
+            }
+            
+            // Update input with final transcript, or show interim
+            if (finalTranscript) {
+              setInput(prev => prev + finalTranscript.trim());
+            } else if (interimTranscript) {
+              // Show interim results (optional - you can remove this if you want)
+              setInput(prev => {
+                // Remove any previous interim text
+                const base = prev.replace(/\s*\[listening\.\.\.\]$/, '');
+                return base + (base ? ' ' : '') + interimTranscript;
+              });
+            }
+          };
+          
+          recognition.onerror = (event: any) => {
+            console.error('Speech recognition error:', event.error);
+            setIsListening(false);
+            
+            // Show user-friendly error messages
+            if (event.error === 'not-allowed') {
+              alert('Microphone permission denied. Please allow microphone access in your browser settings.');
+            } else if (event.error === 'no-speech') {
+              console.log('No speech detected');
+            } else {
+              console.error('Speech recognition error:', event.error);
+            }
+          };
+          
+          recognition.onend = () => {
+            console.log('Speech recognition ended');
+            setIsListening(false);
+          };
+          
+          recognitionRef.current = recognition;
+          setSpeechRecognitionAvailable(true);
+          console.log('Speech recognition initialized successfully');
+        } catch (error) {
+          console.error('Failed to initialize speech recognition:', error);
+          setSpeechRecognitionAvailable(false);
+        }
+      } else {
+        console.warn('Speech Recognition API not available in this browser');
+        setSpeechRecognitionAvailable(false);
       }
     }
     
     return () => {
       if (recognitionRef.current) {
-        recognitionRef.current.stop();
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          // Ignore errors on cleanup
+        }
       }
     };
   }, []);
@@ -127,10 +174,15 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
       role: msg.sender === 'user' ? 'user' as const : 'model' as const,
       parts: [{ text: msg.text }]
     }));
+    
+    // Count how many questions the consultant has asked (assistant messages with ?)
+    const questionCount = messages.filter(msg => 
+      msg.sender === 'system' && msg.text.includes('?')
+    ).length;
 
     try {
-      // Call Gemini API
-      let responseText = await consultWorkflow(userInput, conversationHistory);
+      // Call Gemini API with question count
+      let responseText = await consultWorkflow(userInput, conversationHistory, questionCount);
       
       // Strip markdown formatting (**, __, etc.)
       responseText = responseText
@@ -151,76 +203,43 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
       
       setMessages((prev) => [...prev, systemMsg]);
       
-      // Check if consultant is ready to build (mentions building, "your team", etc.)
-      const readyToBuild = responseText.toLowerCase().includes('build') || 
-                          responseText.toLowerCase().includes('your team') ||
-                          responseText.toLowerCase().includes("head over") ||
-                          (responseText.toLowerCase().includes("let me") && responseText.toLowerCase().includes('team')) ||
-                          responseText.toLowerCase().includes('organizational chart') ||
-                          responseText.toLowerCase().includes('digital worker');
-      
-      if (readyToBuild && onNavigateToTeam && onOrgChartUpdate) {
-        // Generate org structure from conversation
-        const fullConversation = [...messages, userMsg, systemMsg]
-          .map(msg => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
-          .join('\n');
-        
+      // Background: Continuously update org structure as conversation progresses
+      // This happens silently without interrupting the conversation
+      const updateOrgStructureInBackground = async () => {
         try {
-          const orgStructure = await generateOrgStructure(fullConversation);
+          const fullConversation = [...messages, userMsg, systemMsg]
+            .map(msg => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
+            .join('\n');
           
-          if (orgStructure && orgStructure.children && orgStructure.children.length > 0) {
+          // Get current org structure from parent (if available)
+          const currentStructure = currentOrgChart || null;
+          
+          // Update org structure incrementally in the background
+          const updatedStructure = await updateOrgStructureIncrementally(
+            fullConversation,
+            currentStructure
+          );
+          
+          // Only update if we got a valid structure with children
+          if (updatedStructure && onOrgChartUpdate) {
             // Ensure name is "You" to match existing structure
-            if (orgStructure.name !== "You") {
-              orgStructure.name = "You";
+            if (updatedStructure.name !== "You") {
+              updatedStructure.name = "You";
             }
-            // Update org chart with generated structure
-            onOrgChartUpdate(orgStructure);
-            
-            // Navigate to Your Team after a short delay
-            setTimeout(() => {
-              if (onNavigateToTeam) {
-                onNavigateToTeam();
-              }
-            }, 1500);
-          } else {
-            // If structure generation failed, create a simple structure based on conversation
-            // Extract agent name from conversation (look for mentions of agents)
-            const agentMatch = fullConversation.match(/(?:agent|worker|assistant).*?(?:for|that|to)\s+([^.!?\n]+)/i);
-            const agentName = agentMatch ? agentMatch[1].trim() : 'Review Responder'; // Default fallback
-            
-            const simpleStructure: any = {
-              name: "You",
-              type: 'human',
-              role: "Owner",
-              children: [
-                {
-                  name: "Customer Service",
-                  type: 'human',
-                  role: "Department",
-                  children: [
-                    {
-                      name: agentName,
-                      type: 'ai',
-                      role: "Review Management",
-                      status: 'needs_attention'
-                    }
-                  ]
-                }
-              ]
-            };
-            
-            onOrgChartUpdate(simpleStructure);
-            
-            setTimeout(() => {
-              if (onNavigateToTeam) {
-                onNavigateToTeam();
-              }
-            }, 1500);
+            // Silently update the org chart in the background
+            onOrgChartUpdate(updatedStructure);
           }
         } catch (error) {
-          console.error("Error generating org structure:", error);
+          // Silently fail - don't interrupt the conversation
+          console.error("Background org structure update failed:", error);
         }
-      }
+      };
+      
+      // Trigger background update (non-blocking)
+      updateOrgStructureInBackground();
+      
+      // Note: Org structure is now built automatically in the background above
+      // No need to wait for user consent - it updates continuously as conversation progresses
       
       // Advance conversation step if we get a comprehensive response
       if (conversationStep < 2 && responseText.length > 200) {
@@ -411,16 +430,6 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
         <div className="absolute bottom-0 left-0 right-0 bg-white p-6 pb-8">
            <div className="max-w-3xl mx-auto w-full relative">
               
-              {/* Contextual Shortcut Buttons based on step */}
-              {messages.length > 0 && conversationStep === 1 && !isTyping && (
-                  <div className="absolute -top-12 left-0 right-0 flex justify-center gap-2">
-                      <button onClick={() => setInput("Include 'Returns' handling, but 'Vendor Comms' are fine manually.")} className="bg-white border border-gray-200 text-gray-600 px-4 py-2 rounded-full text-xs hover:bg-gray-50 shadow-sm animate-in slide-in-from-bottom-2 flex items-center gap-2 group">
-                          <Command size={12} className="text-gray-400 group-hover:text-purple-500"/>
-                          Shortcut: "Add Returns, Skip Vendors"
-                      </button>
-                  </div>
-              )}
-
               <div className="bg-gray-50 border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-shadow focus-within:ring-2 focus-within:ring-purple-100 focus-within:border-purple-300 overflow-hidden">
                  <textarea
                     value={input}
@@ -450,25 +459,48 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
                         {/* Voice Input Button */}
                         <button 
                           onClick={() => {
+                            if (!speechRecognitionAvailable) {
+                              alert('Speech recognition is not available in this browser. Please use Chrome, Edge, or another browser that supports the Web Speech API.');
+                              return;
+                            }
+                            
                             if (!isListening && recognitionRef.current) {
                               try {
+                                console.log('Starting speech recognition...');
                                 recognitionRef.current.start();
-                                setIsListening(true);
-                              } catch (error) {
+                              } catch (error: any) {
                                 console.error('Failed to start speech recognition:', error);
                                 setIsListening(false);
+                                if (error.message?.includes('already started')) {
+                                  // Recognition already running, just update state
+                                  setIsListening(true);
+                                } else {
+                                  alert('Failed to start voice recording. Please check your microphone permissions.');
+                                }
                               }
                             } else if (isListening && recognitionRef.current) {
+                              console.log('Stopping speech recognition...');
                               recognitionRef.current.stop();
                               setIsListening(false);
+                            } else if (!recognitionRef.current) {
+                              alert('Speech recognition not initialized. Please refresh the page.');
                             }
                           }}
+                          disabled={!speechRecognitionAvailable}
                           className={`p-2 rounded-full transition-all flex items-center justify-center ${
-                            isListening 
+                            !speechRecognitionAvailable
+                              ? 'bg-gray-400 text-gray-200 cursor-not-allowed'
+                              : isListening 
                               ? 'bg-red-600 text-white animate-pulse' 
                               : 'bg-black text-white hover:bg-gray-800'
                           }`}
-                          title={isListening ? "Stop Recording" : "Start Voice Input"}
+                          title={
+                            !speechRecognitionAvailable 
+                              ? "Speech recognition not available" 
+                              : isListening 
+                              ? "Stop Recording" 
+                              : "Start Voice Input"
+                          }
                         >
                             <Mic size={18} />
                         </button>

@@ -40,6 +40,7 @@ const App: React.FC = () => {
           onNavigateToTeam={() => setActiveScreen(Screen.ORG_CHART)}
           messages={consultantMessages}
           onMessagesChange={setConsultantMessages}
+          currentOrgChart={orgChartData}
         />;
       case Screen.ORG_CHART:
         return <Screen2OrgChart 

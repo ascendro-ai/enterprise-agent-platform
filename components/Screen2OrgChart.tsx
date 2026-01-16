@@ -1,8 +1,30 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
-import { Bot, User, Layers, Box, Settings, ZoomIn, Play, X, Camera, Slack, Globe, ToggleRight, ToggleLeft, GripVertical, Send, AlertTriangle, CheckCircle, Edit2, Map, Truck, Plus, ImageIcon, Command, Mic, ArrowRight, Shield, ShieldAlert, Zap, ArrowRightCircle, GitBranch, AlertCircle } from 'lucide-react';
-import { buildAgent, extractAgentContext } from '../services/geminiService';
+import { Bot, User, Layers, Box, Settings, ZoomIn, Play, X, Camera, Slack, Globe, ToggleRight, ToggleLeft, GripVertical, Send, AlertTriangle, CheckCircle, Edit2, Map, Truck, Plus, ImageIcon, Mic, ArrowRight, Shield, ShieldAlert, Zap, ArrowRightCircle, GitBranch, AlertCircle, ChevronDown } from 'lucide-react';
+import { buildAgent, extractAgentContext, processTeamArchitectRequest } from '../services/geminiService';
+import FakeGoogleLogin from './FakeGoogleLogin';
+import FakeGoogleReviews from './FakeGoogleReviews';
+
+// Type declaration for Web Speech API
+interface SpeechRecognition extends EventTarget {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start(): void;
+  stop(): void;
+  onresult: (event: any) => void;
+  onerror: (event: any) => void;
+  onend: () => void;
+}
+
+declare var SpeechRecognition: {
+  new (): SpeechRecognition;
+};
+
+declare var webkitSpeechRecognition: {
+  new (): SpeechRecognition;
+};
 
 interface NodeData {
   name: string;
@@ -59,14 +81,18 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
     }
   }, [graphData, onOrgChartUpdate]);
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+  const [selectedDepartment, setSelectedDepartment] = useState<string>('All Teams');
+  const [isTeamDropdownOpen, setIsTeamDropdownOpen] = useState(false);
   
   // Team Architect Chat State
   const [teamChatInput, setTeamChatInput] = useState("");
   const [teamChatMessages, setTeamChatMessages] = useState<{sender: 'user' | 'system', text: string}[]>([
-      {sender: 'system', text: 'Your organizational structure will appear here. Start by describing your workflow in the Workspace tab, and I\'ll help you build your team of AI agents.'}
+      {sender: 'system', text: 'I can help you organize your teams, delete agents, and more. Just tell me what you\'d like to do!'}
   ]);
   const [chatState, setChatState] = useState<'idle' | 'human_pending'>('idle');
   const [isChatExpanded, setIsChatExpanded] = useState(false);
+  const [pendingChanges, setPendingChanges] = useState<{ changes: any; changeType?: string } | null>(null);
+  const [isProcessingRequest, setIsProcessingRequest] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Agent Builder Chat State
@@ -75,6 +101,16 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
   const [isConfigured, setIsConfigured] = useState(false);
   const [builderStep, setBuilderStep] = useState(0);
   const [isBuilderTyping, setIsBuilderTyping] = useState(false);
+  
+  // Voice recognition state for agent builder
+  const [isBuilderListening, setIsBuilderListening] = useState(false);
+  const [builderSpeechRecognitionAvailable, setBuilderSpeechRecognitionAvailable] = useState(false);
+  const builderRecognitionRef = useRef<SpeechRecognition | null>(null);
+  
+  // Fake Google login/Reviews state
+  const [showGoogleLogin, setShowGoogleLogin] = useState(false);
+  const [showGoogleReviews, setShowGoogleReviews] = useState(false);
+  const [isGoogleLoggedIn, setIsGoogleLoggedIn] = useState(false);
 
   // Agent Blueprint State (The Right Column Data)
   const [blueprint, setBlueprint] = useState<AgentBlueprint>({
@@ -93,6 +129,99 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
   useEffect(() => {
       chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [teamChatMessages, isChatExpanded]);
+
+  // Initialize speech recognition for agent builder
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        try {
+          const recognition = new SpeechRecognition();
+          recognition.continuous = false;
+          recognition.interimResults = true;
+          recognition.lang = 'en-US';
+          
+          recognition.onstart = () => {
+            console.log('Builder speech recognition started');
+            setIsBuilderListening(true);
+          };
+          
+          recognition.onresult = (event: any) => {
+            let interimTranscript = '';
+            let finalTranscript = '';
+            
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+              const transcript = event.results[i][0].transcript;
+              if (event.results[i].isFinal) {
+                finalTranscript += transcript + ' ';
+              } else {
+                interimTranscript += transcript;
+              }
+            }
+            
+            // Update input with final transcript
+            if (finalTranscript) {
+              setBuilderInput(prev => prev + finalTranscript.trim());
+            } else if (interimTranscript) {
+              // Show interim results
+              setBuilderInput(prev => {
+                const base = prev.replace(/\s*\[listening\.\.\.\]$/, '');
+                return base + (base ? ' ' : '') + interimTranscript;
+              });
+            }
+          };
+          
+          recognition.onerror = (event: any) => {
+            console.error('Builder speech recognition error:', event.error);
+            setIsBuilderListening(false);
+            
+            if (event.error === 'not-allowed') {
+              alert('Microphone permission denied. Please allow microphone access in your browser settings.');
+            }
+          };
+          
+          recognition.onend = () => {
+            console.log('Builder speech recognition ended');
+            setIsBuilderListening(false);
+          };
+          
+          builderRecognitionRef.current = recognition;
+          setBuilderSpeechRecognitionAvailable(true);
+          console.log('Builder speech recognition initialized successfully');
+        } catch (error) {
+          console.error('Failed to initialize builder speech recognition:', error);
+          setBuilderSpeechRecognitionAvailable(false);
+        }
+      } else {
+        console.warn('Speech Recognition API not available in this browser');
+        setBuilderSpeechRecognitionAvailable(false);
+      }
+    }
+    
+    return () => {
+      if (builderRecognitionRef.current) {
+        try {
+          builderRecognitionRef.current.stop();
+        } catch (e) {
+          // Ignore errors on cleanup
+        }
+      }
+    };
+  }, []);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest('.team-dropdown-container')) {
+        setIsTeamDropdownOpen(false);
+      }
+    };
+    if (isTeamDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [isTeamDropdownOpen]);
 
   // Initialize Agent Builder Chat when an agent is selected
   useEffect(() => {
@@ -139,7 +268,7 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
                   // Fallback to default message
                   setBuilderMessages([{ 
                     sender: 'system', 
-                    text: `I am the architect for ${selectedAgent}. Based on our conversation, I understand you want to automate this workflow. Let me ask some clarifying questions to configure this agent properly.` 
+                    text: `I am the architect for ${selectedAgent}. Based on our conversation, I understand you want to automate this workflow.\n\nAm I missing anything else, or would you like to add any additional details about how this agent should work?` 
                   }]);
                 }
               };
@@ -149,6 +278,59 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
       }
   }, [selectedAgent, consultantHistory]);
 
+  // Extract departments from org chart
+  const getDepartments = (): string[] => {
+    const departments = new Set<string>();
+    const traverse = (node: NodeData) => {
+      if (node.type === 'human' && node.role && node.role.includes('Manager')) {
+        departments.add(node.name);
+      }
+      if (node.children) {
+        node.children.forEach(traverse);
+      }
+    };
+    if (graphData.children) {
+      graphData.children.forEach(traverse);
+    }
+    return ['All Teams', ...Array.from(departments).sort()];
+  };
+
+  // Filter graph data by selected department and remove "You" root
+  const getFilteredGraphData = (): NodeData | null => {
+    // If graphData is "You", use its children instead
+    const rootData = graphData.name === "You" && graphData.children 
+      ? (graphData.children.length === 1 ? graphData.children[0] : {
+          name: "Root",
+          type: 'human' as const,
+          children: graphData.children
+        })
+      : graphData;
+    
+    if (!rootData.children || rootData.children.length === 0) {
+      return null;
+    }
+    
+    if (selectedDepartment === 'All Teams') {
+      // If single top-level item, return it directly
+      if (rootData.children.length === 1) {
+        return rootData.children[0];
+      }
+      // Multiple children - create a virtual root
+      return {
+        name: "All Teams",
+        type: 'human' as const,
+        children: rootData.children
+      };
+    }
+    
+    // Filter by department
+    const filtered = rootData.children.find(
+      child => child.name === selectedDepartment
+    );
+    
+    return filtered || rootData.children[0] || null;
+  };
+
   // Handle D3 Rendering & Zoom
   useEffect(() => {
     if (!svgRef.current) return;
@@ -156,7 +338,12 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
     const svg = d3.select(svgRef.current);
     svg.selectAll("*").remove(); 
 
-    const root = d3.hierarchy<NodeData>(graphData);
+    const filteredData = getFilteredGraphData();
+    if (!filteredData) {
+      // No data to render
+      return;
+    }
+    const root = d3.hierarchy<NodeData>(filteredData);
     const treeLayout = d3.tree<NodeData>().nodeSize([240, 160]);
     treeLayout(root);
 
@@ -217,9 +404,18 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
     nodes.each(function(d) {
       const node = d3.select(this);
       
+      // Calculate dynamic height based on role text length
+      const roleText = d.data.role || '';
+      const maxTextWidth = (d.data.type === 'ai' ? 200 : 180) - 80; // Card width minus avatar and padding
+      const estimatedLines = roleText ? Math.ceil((roleText.length * 6) / maxTextWidth) : 1; // Rough estimate: 6px per char
+      const roleHeight = Math.max(1, Math.min(estimatedLines, 3)) * 14; // Max 3 lines, 14px per line
+      
       // Unified style for both AI and Human nodes - rounded cards with avatar on left
       const cardWidth = d.data.type === 'ai' ? 200 : 180;
-      const cardHeight = d.data.type === 'ai' ? 64 : 56;
+      const baseHeight = d.data.type === 'ai' ? 64 : 56;
+      const cardHeight = d.data.type === 'ai' && d.data.role 
+        ? Math.max(baseHeight, 48 + roleHeight) // Dynamic height for AI agents with role
+        : baseHeight;
       const cardX = -cardWidth / 2;
       const cardY = -cardHeight / 2;
       
@@ -235,39 +431,79 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
         .attr("stroke-width", selectedAgent === d.data.name ? 2 : 1)
         .style("filter", "drop-shadow(0 2px 8px rgba(0, 0, 0, 0.08))");
       
-      // Avatar circle (pink for all nodes, matching image style)
+      // Avatar circle
       const avatarRadius = 20;
       const avatarX = cardX + 16;
       const avatarY = 0;
       
-      node.append("circle")
-        .attr("r", avatarRadius)
-        .attr("cx", avatarX)
-        .attr("cy", avatarY)
-        .attr("fill", "#F9A8D4"); // Pink color matching image
-      
-      // Avatar initials or image
-      if (d.data.img) {
-        node.append("image")
-          .attr("xlink:href", d.data.img)
+      // Different styling for AI agents vs human tasks
+      if (d.data.type === 'ai') {
+        // AI Agent - Use Agento.png image
+        node.append("circle")
+          .attr("r", avatarRadius)
+          .attr("cx", avatarX)
+          .attr("cy", avatarY)
+          .attr("fill", "#E0E7FF"); // Light background circle
+        
+        // Agent image - use both xlink:href (for older browsers) and href (for newer)
+        const image = node.append("image")
+          .attr("href", "/Agento.png")
+          .attr("xlink:href", "/Agento.png")
           .attr("x", avatarX - avatarRadius)
           .attr("y", avatarY - avatarRadius)
           .attr("width", avatarRadius * 2)
-          .attr("height", avatarRadius * 2)
-          .attr("clip-path", `circle(${avatarRadius}px at ${avatarX}px ${avatarY}px)`);
+          .attr("height", avatarRadius * 2);
+        
+        // Create clip path for circular image (use a stable ID)
+        const clipId = `clip-agent-${d.data.name.replace(/\s+/g, '-').toLowerCase().replace(/[^a-z0-9-]/g, '')}`;
+        let defs = svg.select("defs");
+        if (defs.empty()) {
+          defs = svg.append("defs");
+        }
+        
+        // Only create clip path if it doesn't exist (reuse for same agent names)
+        if (defs.select(`#${clipId}`).empty()) {
+          defs.append("clipPath")
+            .attr("id", clipId)
+            .append("circle")
+            .attr("cx", avatarRadius) // Center of the image (image is 2*radius wide)
+            .attr("cy", avatarRadius) // Center of the image (image is 2*radius tall)
+            .attr("r", avatarRadius);
+        }
+        
+        // Apply clip path - coordinates in clip path are relative to the image element
+        image.attr("clip-path", `url(#${clipId})`);
       } else {
-        // Show initials
-        const initials = getInitials(d.data.name);
-        node.append("text")
-          .attr("x", avatarX)
-          .attr("y", avatarY)
-          .attr("text-anchor", "middle")
-          .attr("dy", "0.35em")
-          .style("font-family", "Inter, sans-serif")
-          .style("font-size", "11px")
-          .style("font-weight", "600")
-          .style("fill", "#BE185D") // Dark pink text
-          .text(initials);
+        // Human task - Pink circle with initials
+        node.append("circle")
+          .attr("r", avatarRadius)
+          .attr("cx", avatarX)
+          .attr("cy", avatarY)
+          .attr("fill", "#F9A8D4"); // Pink color matching image
+        
+        // Avatar initials or image
+        if (d.data.img) {
+          node.append("image")
+            .attr("xlink:href", d.data.img)
+            .attr("x", avatarX - avatarRadius)
+            .attr("y", avatarY - avatarRadius)
+            .attr("width", avatarRadius * 2)
+            .attr("height", avatarRadius * 2)
+            .attr("clip-path", `circle(${avatarRadius}px at ${avatarX}px ${avatarY}px)`);
+        } else {
+          // Show initials
+          const initials = getInitials(d.data.name);
+          node.append("text")
+            .attr("x", avatarX)
+            .attr("y", avatarY)
+            .attr("text-anchor", "middle")
+            .attr("dy", "0.35em")
+            .style("font-family", "Inter, sans-serif")
+            .style("font-size", "11px")
+            .style("font-weight", "600")
+            .style("fill", "#BE185D") // Dark pink text
+            .text(initials);
+        }
       }
       
       // Name text (positioned to the right of avatar)
@@ -283,17 +519,45 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
         .style("fill", "#111827")
         .text(d.data.name);
       
-      // Role text for AI nodes
+      // Role text for AI nodes - with text wrapping
       if (d.data.type === 'ai' && d.data.role) {
-        node.append("text")
-          .attr("x", textX)
-          .attr("y", 12)
-          .attr("text-anchor", "start")
-          .attr("dy", "0.35em")
-          .style("font-family", "Inter, sans-serif")
-          .style("font-size", "11px")
-          .style("fill", "#6B7280")
-          .text(d.data.role);
+        const roleText = d.data.role;
+        const maxWidth = cardWidth - textX - 16; // Available width for text
+        
+        // Split text into words and create lines
+        const words = roleText.split(' ');
+        const lines: string[] = [];
+        let currentLine = '';
+        
+        words.forEach(word => {
+          const testLine = currentLine ? `${currentLine} ${word}` : word;
+          // Rough estimate: 6px per character
+          const testWidth = testLine.length * 6;
+          
+          if (testWidth > maxWidth && currentLine) {
+            lines.push(currentLine);
+            currentLine = word;
+          } else {
+            currentLine = testLine;
+          }
+        });
+        if (currentLine) lines.push(currentLine);
+        
+        // Limit to 3 lines max
+        const displayLines = lines.slice(0, 3);
+        
+        // Render each line
+        displayLines.forEach((line, idx) => {
+          node.append("text")
+            .attr("x", textX)
+            .attr("y", 12 + (idx * 14)) // 14px line height
+            .attr("text-anchor", "start")
+            .attr("dy", "0.35em")
+            .style("font-family", "Inter, sans-serif")
+            .style("font-size", "11px")
+            .style("fill", "#6B7280")
+            .text(line);
+        });
       }
 
       // STATUS BADGES for AI nodes
@@ -356,7 +620,7 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
       }
     });
 
-  }, [dimensions, selectedAgent, graphData]);
+  }, [dimensions, selectedAgent, graphData, selectedDepartment]);
 
   // --- Helpers to Update Graph Data ---
   const addHumanMember = (taskName: string, ownerName: string, dept: string = "Ops & Logistics") => {
@@ -417,48 +681,70 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
 
   // --- Handlers ---
 
-  const handleTeamChatSend = (inputOverride?: string) => {
+  const handleTeamChatSend = async (inputOverride?: string) => {
       const textToSend = inputOverride || teamChatInput;
       if(!textToSend.trim()) return;
       
-      const inputText = textToSend.toLowerCase();
       setTeamChatMessages(prev => [...prev, {sender: 'user', text: textToSend}]);
       setTeamChatInput("");
-      setIsChatExpanded(true); // Auto-expand when chatting
+      setIsChatExpanded(true);
+      setIsProcessingRequest(true);
       
-      if (chatState === 'human_pending') {
-          // User is providing Task/Person for new manual task
-          setTimeout(() => {
-              // Naive parsing for demo
-              const parts = textToSend.split(',');
-              const taskName = parts[0] || "New Task";
-              const owner = parts[1] || "Unassigned";
-              
-              setTeamChatMessages(prev => [...prev, {sender: 'system', text: `Logged '${taskName}' as a manual task assigned to ${owner}.`}]);
-              addHumanMember(taskName, owner.trim());
-              setChatState('idle');
-          }, 800);
-      } else {
-          // New Request
-          if (inputText.includes("route") || inputText.includes("planner")) {
-              setTimeout(() => {
-                   setTeamChatMessages(prev => [...prev, {sender: 'system', text: "Understood. I am converting the 'Route Planner' role to a digital worker now. Opening the configuration suite..."}]);
-                   convertRoutePlannerToAI();
-                   setSelectedAgent("Route Planner");
-                   setIsChatExpanded(false); // Close chat to focus on panel
-                   setChatState('idle');
-              }, 800);
-          } else if (inputText.includes("manual") || inputText.includes("task") || inputText.includes("assign")) {
-              setTimeout(() => {
-                  setTeamChatMessages(prev => [...prev, {sender: 'system', text: "Understood. What is the Task Name and who is responsible? (e.g. 'Quality Check, Sarah')"}]);
-                  setChatState('human_pending');
-              }, 500);
-          } else {
-              setTimeout(() => {
-                  setTeamChatMessages(prev => [...prev, {sender: 'system', text: "I've logged that request in the architecture queue."}]);
-              }, 1000);
-          }
+      try {
+        // Process request with Team Architect LLM
+        const result = await processTeamArchitectRequest(
+          textToSend,
+          graphData,
+          teamChatMessages
+        );
+        
+        // Add response to chat
+        setTeamChatMessages(prev => [...prev, {sender: 'system', text: result.response}]);
+        
+        // If changes are proposed, show confirmation UI
+        if (result.requiresConfirmation && result.proposedChanges) {
+          setPendingChanges({
+            changes: result.proposedChanges,
+            changeType: result.changeType
+          });
+        } else {
+          // No changes needed, just conversation
+          setPendingChanges(null);
+        }
+      } catch (error) {
+        console.error("Error processing team architect request:", error);
+        setTeamChatMessages(prev => [...prev, {sender: 'system', text: "I encountered an error. Please try rephrasing your request."}]);
+      } finally {
+        setIsProcessingRequest(false);
       }
+  };
+
+  const handleConfirmChanges = () => {
+    if (pendingChanges && pendingChanges.changes) {
+      // Ensure name is "You" if it's the root
+      const updatedStructure = { ...pendingChanges.changes };
+      if (updatedStructure.name !== "You" && !updatedStructure.children) {
+        // If it's a new structure without "You", wrap it
+        updatedStructure.name = "You";
+        updatedStructure.type = "human";
+        updatedStructure.role = "Owner";
+      } else if (updatedStructure.name !== "You") {
+        updatedStructure.name = "You";
+      }
+      
+      setGraphData(updatedStructure);
+      if (onOrgChartUpdate) {
+        onOrgChartUpdate(updatedStructure);
+      }
+      
+      setTeamChatMessages(prev => [...prev, {sender: 'system', text: "Changes applied successfully! Your organizational structure has been updated."}]);
+      setPendingChanges(null);
+    }
+  };
+
+  const handleRejectChanges = () => {
+    setTeamChatMessages(prev => [...prev, {sender: 'system', text: "Understood. I've cancelled those changes. What would you like to do instead?"}]);
+    setPendingChanges(null);
   };
 
   const handleBuilderSend = async (text: string) => {
@@ -473,8 +759,30 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
       }));
 
       try {
+        // Check if user is asking to log into Google
+        const textLower = text.toLowerCase();
+        if (textLower.includes('log in') || textLower.includes('login') || textLower.includes('sign in') || textLower.includes('authenticate')) {
+          setShowGoogleLogin(true);
+          setIsBuilderTyping(false);
+          setBuilderMessages(prev => [...prev, {sender: 'system', text: 'I\'ve opened the Google login screen for you. Please log in to continue.'}]);
+          return;
+        }
+
         // Call Gemini API for agent builder
         const result = await buildAgent(selectedAgent || 'Agent', text, conversationHistory);
+        
+        // Check if response mentions needing Google login
+        const responseLower = result.response.toLowerCase();
+        if (responseLower.includes('log into google') || responseLower.includes('google login') || responseLower.includes('need you to log') || responseLower.includes('access google')) {
+          setShowGoogleLogin(true);
+        }
+        
+        // Check if response mentions Google Reviews
+        if (responseLower.includes('google reviews') || responseLower.includes('reviews page')) {
+          if (isGoogleLoggedIn) {
+            setShowGoogleReviews(true);
+          }
+        }
         
         // Use Gemini response and strip markdown
         let systemResponse = result.response;
@@ -611,6 +919,38 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
              Drag canvas to pan • Click nodes to configure
          </div>
 
+         {/* Team Dropdown - Top Right */}
+         <div className="absolute top-4 right-4 z-30 team-dropdown-container">
+           <div className="relative">
+             <button
+               onClick={() => setIsTeamDropdownOpen(!isTeamDropdownOpen)}
+               className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 rounded-lg shadow-sm hover:bg-gray-50 transition-colors"
+             >
+               <span className="text-sm font-medium text-gray-700">Team</span>
+               <ChevronDown size={16} className={`text-gray-500 transition-transform ${isTeamDropdownOpen ? 'rotate-180' : ''}`} />
+             </button>
+             
+             {isTeamDropdownOpen && (
+               <div className="absolute top-full right-0 mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-40">
+                 {getDepartments().map((dept) => (
+                   <button
+                     key={dept}
+                     onClick={() => {
+                       setSelectedDepartment(dept);
+                       setIsTeamDropdownOpen(false);
+                     }}
+                     className={`w-full text-left px-4 py-2 text-sm hover:bg-gray-50 transition-colors ${
+                       selectedDepartment === dept ? 'bg-purple-50 text-purple-700 font-medium' : 'text-gray-700'
+                     } ${dept === 'All Teams' ? 'border-b border-gray-100' : ''}`}
+                   >
+                     {dept}
+                   </button>
+                 ))}
+               </div>
+             )}
+           </div>
+         </div>
+
          {/* REDESIGNED Team Architect Chat (Sticky Bottom Bar + Overlay History) */}
          <div className="absolute bottom-0 left-0 right-0 p-6 pb-8 z-20 pointer-events-none">
            <div className="max-w-2xl mx-auto w-full relative pointer-events-auto">
@@ -682,15 +1022,44 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
                 </div>
               )}
               
-               {chatState === 'human_pending' && isChatExpanded && (
-                  <div className="absolute bottom-[80px] left-0 right-0 flex justify-center gap-2 z-30">
-                       <button onClick={() => handleTeamChatSend("Visual Merchandising, Sarah")} className="bg-white border border-gray-200 text-gray-600 px-4 py-2 rounded-full text-xs hover:bg-gray-50 shadow-sm animate-in slide-in-from-bottom-2 flex items-center gap-2 group">
-                          <Command size={12} className="text-gray-400 group-hover:text-purple-500"/>
-                          Shortcut: "Visual Merchandising, Sarah"
-                      </button>
+               {/* Pending Changes Confirmation */}
+               {pendingChanges && (
+                  <div className="absolute bottom-[80px] left-0 right-0 z-30 mb-2">
+                    <div className="bg-purple-50 border-2 border-purple-200 rounded-xl p-4 shadow-lg">
+                      <div className="flex items-start gap-3">
+                        <div className="w-8 h-8 rounded-full bg-purple-100 flex items-center justify-center shrink-0">
+                          <AlertTriangle size={16} className="text-purple-600" />
+                        </div>
+                        <div className="flex-1">
+                          <h4 className="font-semibold text-purple-900 text-sm mb-1">Confirm Changes</h4>
+                          <p className="text-xs text-purple-700 mb-3">
+                            {pendingChanges.changeType === 'restructure' 
+                              ? 'This will restructure your entire organizational chart. Please review and confirm.'
+                              : pendingChanges.changeType === 'add_team'
+                              ? 'A new team will be added to your organizational structure.'
+                              : pendingChanges.changeType === 'add_agent'
+                              ? 'A new AI agent will be added to your team.'
+                              : 'Changes will be applied to your organizational structure.'}
+                          </p>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={handleConfirmChanges}
+                              className="px-4 py-1.5 bg-purple-600 text-white rounded-lg text-xs font-medium hover:bg-purple-700 transition-colors"
+                            >
+                              Confirm & Apply
+                            </button>
+                            <button
+                              onClick={handleRejectChanges}
+                              className="px-4 py-1.5 bg-white border border-purple-200 text-purple-700 rounded-lg text-xs font-medium hover:bg-purple-50 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
               )}
-
 
               {/* Main Input Box (Matches Screen 1) */}
               <div 
@@ -727,9 +1096,9 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
                          </button>
                         <button 
                         onClick={() => handleTeamChatSend()}
-                        disabled={!teamChatInput.trim()}
+                        disabled={!teamChatInput.trim() || isProcessingRequest}
                         className={`p-2 rounded-lg transition-all ${
-                            teamChatInput.trim() 
+                            teamChatInput.trim() && !isProcessingRequest
                             ? 'bg-gray-900 text-white hover:bg-black shadow-md' 
                             : 'bg-gray-200 text-gray-400 cursor-not-allowed'
                         }`}
@@ -803,15 +1172,72 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
                         {renderBuilderShortcuts()}
 
                         <div className="p-4 bg-white border-t border-gray-200">
-                             <div className="relative">
+                             <div className="relative flex items-center gap-2">
                                  <input 
-                                    className="w-full bg-gray-100 rounded-xl pl-4 pr-10 py-3 text-sm focus:ring-2 focus:ring-purple-500 outline-none" 
+                                    className="flex-1 bg-gray-100 rounded-xl pl-4 pr-20 py-3 text-sm focus:ring-2 focus:ring-purple-500 outline-none" 
                                     placeholder="Instruct builder..."
                                     value={builderInput}
                                     onChange={(e) => setBuilderInput(e.target.value)}
                                     onKeyDown={(e) => e.key === 'Enter' && handleBuilderSend(builderInput)}
                                  />
-                                 <button onClick={() => handleBuilderSend(builderInput)} className="absolute right-2 top-2 p-1.5 bg-gray-900 text-white rounded-lg hover:bg-black">
+                                 
+                                 {/* Voice Input Button */}
+                                 <button
+                                   onClick={() => {
+                                     if (!builderSpeechRecognitionAvailable) {
+                                       alert('Speech recognition is not available in this browser. Please use Chrome, Edge, or another browser that supports the Web Speech API.');
+                                       return;
+                                     }
+                                     
+                                     if (!isBuilderListening && builderRecognitionRef.current) {
+                                       try {
+                                         console.log('Starting builder speech recognition...');
+                                         builderRecognitionRef.current.start();
+                                       } catch (error: any) {
+                                         console.error('Failed to start builder speech recognition:', error);
+                                         setIsBuilderListening(false);
+                                         if (error.message?.includes('already started')) {
+                                           setIsBuilderListening(true);
+                                         } else {
+                                           alert('Failed to start voice recording. Please check your microphone permissions.');
+                                         }
+                                       }
+                                     } else if (isBuilderListening && builderRecognitionRef.current) {
+                                       console.log('Stopping builder speech recognition...');
+                                       builderRecognitionRef.current.stop();
+                                       setIsBuilderListening(false);
+                                     } else if (!builderRecognitionRef.current) {
+                                       alert('Speech recognition not initialized. Please refresh the page.');
+                                     }
+                                   }}
+                                   disabled={!builderSpeechRecognitionAvailable}
+                                   className={`p-2 rounded-full transition-all flex items-center justify-center ${
+                                     !builderSpeechRecognitionAvailable
+                                       ? 'bg-gray-400 text-gray-200 cursor-not-allowed'
+                                       : isBuilderListening 
+                                       ? 'bg-red-600 text-white animate-pulse' 
+                                       : 'bg-black text-white hover:bg-gray-800'
+                                   }`}
+                                   title={
+                                     !builderSpeechRecognitionAvailable 
+                                       ? "Speech recognition not available" 
+                                       : isBuilderListening 
+                                       ? "Stop Recording" 
+                                       : "Start Voice Input"
+                                   }
+                                 >
+                                     <Mic size={16} />
+                                 </button>
+                                 
+                                 <button 
+                                   onClick={() => handleBuilderSend(builderInput)} 
+                                   disabled={!builderInput.trim()}
+                                   className={`p-2 rounded-lg transition-all ${
+                                     builderInput.trim()
+                                       ? 'bg-gray-900 text-white hover:bg-black shadow-md' 
+                                       : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                                   }`}
+                                 >
                                      <ArrowRight size={14} />
                                  </button>
                              </div>
@@ -905,7 +1331,7 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
                                  Logic Flow
                              </h3>
                              
-                             <div className="bg-gray-50 border border-gray-200 rounded-xl p-8 overflow-hidden relative min-h-[160px] flex items-center justify-center">
+                             <div className="bg-gray-50 border border-gray-200 rounded-xl p-8 overflow-hidden relative min-h-[160px]">
                                  {blueprint.flowSteps.length === 0 ? (
                                       <div className="absolute inset-0 flex items-center justify-center opacity-20 pointer-events-none grayscale select-none">
                                            {/* Ghost Diagram - Watermark Style */}
@@ -924,29 +1350,100 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
                                            </div>
                                       </div>
                                  ) : (
-                                     <div className="flex items-center justify-center min-w-max gap-4 z-10">
-                                         {blueprint.flowSteps.map((step, i) => (
-                                             <React.Fragment key={i}>
-                                                 {/* Render Arrow if not first */}
-                                                 {i > 0 && (
-                                                     <div className="text-gray-300">
-                                                         <ArrowRight size={24} />
-                                                     </div>
-                                                 )}
+                                     <div className="relative w-full min-h-[200px] overflow-x-auto overflow-y-auto" style={{ maxHeight: '400px' }}>
+                                         {/* Candyland-style path container - centered with proper padding */}
+                                         <div className="relative mx-auto" style={{ 
+                                             minWidth: '600px', 
+                                             minHeight: '300px',
+                                             padding: '20px',
+                                             width: 'fit-content'
+                                         }}>
+                                             {blueprint.flowSteps.map((step, i) => {
+                                                 // Calculate position in zigzag pattern (Candyland style)
+                                                 // Pattern: right (0-2), down, left (3-5), down, right (6-8), down, left...
+                                                 const stepsPerRow = 3;
+                                                 const row = Math.floor(i / stepsPerRow);
+                                                 const col = i % stepsPerRow;
+                                                 const isEvenRow = row % 2 === 0;
                                                  
-                                                 {/* Render Step Node */}
-                                                 <div className={`relative px-5 py-3 rounded-xl border shadow-sm font-medium text-sm flex flex-col items-center gap-1 animate-in zoom-in-95 duration-300
-                                                     ${step.type === 'trigger' ? 'bg-white border-blue-200 text-blue-800' : 
-                                                       step.type === 'decision' ? 'bg-white border-yellow-200 text-yellow-800 rounded-full px-8' :
-                                                       step.type === 'end' ? 'bg-gray-900 border-gray-900 text-white' :
-                                                       'bg-white border-gray-200 text-gray-800'}
-                                                 `}>
-                                                     {step.type === 'trigger' && <span className="text-[10px] uppercase font-bold text-blue-400 tracking-wider">Trigger</span>}
-                                                     {step.type === 'decision' && <span className="text-[10px] uppercase font-bold text-yellow-500 tracking-wider">Check</span>}
-                                                     {step.label}
-                                                 </div>
-                                             </React.Fragment>
-                                         ))}
+                                                 // Calculate actual column (reverse for odd rows to create zigzag)
+                                                 const actualCol = isEvenRow ? col : (stepsPerRow - 1 - col);
+                                                 
+                                                 // Spacing
+                                                 const stepWidth = 140;
+                                                 const stepHeight = 70;
+                                                 const horizontalSpacing = stepWidth + 30;
+                                                 const verticalSpacing = stepHeight + 30;
+                                                 
+                                                 const x = actualCol * horizontalSpacing;
+                                                 const y = row * verticalSpacing;
+                                                 
+                                                 // Calculate previous step position for connector
+                                                 const prevRow = i > 0 ? Math.floor((i - 1) / stepsPerRow) : -1;
+                                                 const prevCol = i > 0 ? (i - 1) % stepsPerRow : -1;
+                                                 const prevIsEvenRow = prevRow % 2 === 0;
+                                                 const prevActualCol = prevIsEvenRow ? prevCol : (stepsPerRow - 1 - prevCol);
+                                                 const prevX = prevActualCol * horizontalSpacing;
+                                                 const prevY = prevRow * verticalSpacing;
+                                                 
+                                                 return (
+                                                     <React.Fragment key={i}>
+                                                         {/* Connector line */}
+                                                         {i > 0 && (
+                                                             <>
+                                                                 {/* Horizontal connector */}
+                                                                 {row === prevRow && (
+                                                                     <div 
+                                                                         className="absolute border-2 border-purple-300 bg-purple-200"
+                                                                         style={{
+                                                                             left: `${prevX + stepWidth}px`,
+                                                                             top: `${prevY + stepHeight / 2 - 1}px`,
+                                                                             width: `${x - prevX - stepWidth}px`,
+                                                                             height: '2px',
+                                                                             zIndex: 0
+                                                                         }}
+                                                                     />
+                                                                 )}
+                                                                 {/* Vertical connector (down) */}
+                                                                 {row !== prevRow && (
+                                                                     <div 
+                                                                         className="absolute border-2 border-purple-300 bg-purple-200"
+                                                                         style={{
+                                                                             left: `${prevX + stepWidth / 2 - 1}px`,
+                                                                             top: `${prevY + stepHeight}px`,
+                                                                             width: '2px',
+                                                                             height: `${y - prevY - stepHeight}px`,
+                                                                             zIndex: 0
+                                                                         }}
+                                                                     />
+                                                                 )}
+                                                             </>
+                                                         )}
+                                                         
+                                                         {/* Step Node */}
+                                                         <div 
+                                                             className={`absolute px-4 py-2.5 rounded-xl border shadow-sm font-medium text-xs flex flex-col items-center gap-1 justify-center animate-in zoom-in-95 duration-300 z-10
+                                                                 ${step.type === 'trigger' ? 'bg-white border-blue-200 text-blue-800' : 
+                                                                   step.type === 'decision' ? 'bg-white border-yellow-200 text-yellow-800 rounded-full px-6' :
+                                                                   step.type === 'end' ? 'bg-gray-900 border-gray-900 text-white' :
+                                                                   'bg-white border-gray-200 text-gray-800'}
+                                                             `}
+                                                             style={{
+                                                                 left: `${x}px`,
+                                                                 top: `${y}px`,
+                                                                 width: `${stepWidth}px`,
+                                                                 minHeight: `${stepHeight}px`
+                                                             }}
+                                                         >
+                                                             {step.type === 'trigger' && <span className="text-[9px] uppercase font-bold text-blue-400 tracking-wider">Trigger</span>}
+                                                             {step.type === 'decision' && <span className="text-[9px] uppercase font-bold text-yellow-500 tracking-wider">Check</span>}
+                                                             {step.type === 'end' && <span className="text-[9px] uppercase font-bold text-gray-400 tracking-wider">End</span>}
+                                                             <span className="text-center text-[11px] leading-tight px-1">{step.label}</span>
+                                                         </div>
+                                                     </React.Fragment>
+                                                 );
+                                             })}
+                                         </div>
                                      </div>
                                  )}
                                  
@@ -969,6 +1466,28 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
            }
          `}</style>
       </div>
+      
+      {/* Fake Google Login Modal */}
+      {showGoogleLogin && (
+        <FakeGoogleLogin
+          onClose={() => setShowGoogleLogin(false)}
+          onLogin={() => {
+            setIsGoogleLoggedIn(true);
+            setBuilderMessages(prev => [...prev, {
+              sender: 'system',
+              text: 'Great! You\'re now logged into Google. I can now access your Google Reviews. Would you like me to show you the reviews page?'
+            }]);
+          }}
+        />
+      )}
+      
+      {/* Fake Google Reviews Modal */}
+      {showGoogleReviews && (
+        <FakeGoogleReviews
+          onClose={() => setShowGoogleReviews(false)}
+          businessName={selectedAgent ? `${selectedAgent} - Reviews` : "Business Reviews"}
+        />
+      )}
     </div>
   );
 };
