@@ -32,6 +32,9 @@ const App: React.FC = () => {
 
   // Store consultant conversation history for session persistence
   const [consultantMessages, setConsultantMessages] = useState<ChatMessage[]>([]);
+  
+  // Shared state for tasks from Demo Environment to Control Room
+  const [demoEnvironmentTasks, setDemoEnvironmentTasks] = useState<any[]>([]);
 
   const renderScreen = () => {
     switch (activeScreen) {
@@ -50,9 +53,18 @@ const App: React.FC = () => {
           consultantHistory={consultantMessages}
         />;
       case Screen.CONTROL_ROOM:
-        return <Screen4ControlRoom orgChartData={orgChartData} />;
+        return <Screen4ControlRoom orgChartData={orgChartData} demoTasks={demoEnvironmentTasks} />;
       case Screen.TEST_SUITE:
         return <Screen5TestSuite />;
+      case Screen.DEMO_ENVIRONMENT:
+        return <Screen6DemoEnvironment 
+          orgChartData={orgChartData} 
+          onTaskCreated={(task) => {
+            // Add task to shared state for Control Room
+            setDemoEnvironmentTasks(prev => [...prev, task]);
+            console.log('Demo Environment task created:', task);
+          }} 
+        />;
       default:
         return <Screen1Consultant onOrgChartUpdate={setOrgChartData} />;
     }

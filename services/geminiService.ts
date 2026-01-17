@@ -299,7 +299,7 @@ Remember: You focus ONLY on this agent's configuration, NOT organizational struc
     const responseText = response.text || "I couldn't generate a response right now.";
 
     // Try to extract blueprint information from response
-    // Look for JSON in the response
+    // First, look for JSON in the response
     const jsonMatch = responseText.match(/\{[\s\S]*"blueprint"[\s\S]*\}/);
     if (jsonMatch) {
       try {
@@ -317,8 +317,58 @@ Remember: You focus ONLY on this agent's configuration, NOT organizational struc
       }
     }
 
-    // If no JSON found, try to extract blueprint from text using LLM
-    // For now, return response and let the UI handle blueprint updates from context
+    // If no JSON found, try to extract blueprint from natural language using a follow-up LLM call
+    // This helps when the agent builder responds conversationally but mentions blueprint items
+    try {
+      const extractionPrompt = `Extract blueprint information from this agent builder conversation response:
+
+"${responseText}"
+
+If the response mentions:
+- What the agent should do (affirmative actions) → extract as greenList items
+- What the agent should NOT do (constraints/limits) → extract as redList items  
+- Workflow steps, triggers, actions, or decisions → extract as flowSteps
+
+Return ONLY a JSON object with this structure (or empty arrays if nothing found):
+{
+  "greenList": ["action 1", "action 2"],
+  "redList": ["constraint 1", "constraint 2"],
+  "flowSteps": [
+    {"label": "Step description", "type": "trigger|action|decision|end"}
+  ]
+}
+
+Only return valid JSON, no other text.`;
+
+      const extractionResponse = await client.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: extractionPrompt
+      });
+
+      const extractionText = extractionResponse.text || '{}';
+      const extractionJsonMatch = extractionText.match(/\{[\s\S]*\}/);
+      if (extractionJsonMatch) {
+        try {
+          const extracted = JSON.parse(extractionJsonMatch[0]);
+          if (extracted.greenList?.length > 0 || extracted.redList?.length > 0 || extracted.flowSteps?.length > 0) {
+            return {
+              response: responseText,
+              blueprint: {
+                greenList: extracted.greenList || [],
+                redList: extracted.redList || [],
+                flowSteps: extracted.flowSteps || []
+              }
+            };
+          }
+        } catch (e) {
+          console.error("Error parsing extracted blueprint:", e);
+        }
+      }
+    } catch (e) {
+      console.error("Error extracting blueprint from text:", e);
+    }
+
+    // If no blueprint found, return response and let the UI handle blueprint updates from context
     // The blueprint should already be populated from extractAgentContext
     return {
       response: responseText

@@ -31,9 +31,10 @@ interface NodeData {
 
 interface Screen4ControlRoomProps {
   orgChartData?: NodeData;
+  demoTasks?: any[];
 }
 
-const Screen4ControlRoom: React.FC<Screen4ControlRoomProps> = ({ orgChartData }) => {
+const Screen4ControlRoom: React.FC<Screen4ControlRoomProps> = ({ orgChartData, demoTasks = [] }) => {
   const [selectedTeam, setSelectedTeam] = useState('All Teams');
 
   // Extract all AI agents from org chart data
@@ -122,15 +123,49 @@ const Screen4ControlRoom: React.FC<Screen4ControlRoomProps> = ({ orgChartData })
 
   const [tasks, setTasks] = useState<AgentTask[]>(generateTasksForAgents());
 
-  // Update tasks when org chart data changes
-  useEffect(() => {
-    if (orgChartData) {
-      const newTasks = generateTasksForAgents();
-      setTasks(newTasks);
-    } else {
-      setTasks([]);
+  // Convert demo environment tasks to Control Room tasks
+  const convertDemoTaskToControlRoomTask = (demoTask: any): AgentTask | null => {
+    if (demoTask.type === 'new_review' || demoTask.type === 'review_drafted' || demoTask.type === 'review_posted') {
+      return {
+        id: `demo-${demoTask.review?.id || Date.now()}`,
+        agentName: demoTask.agent || 'AI Review Assistant',
+        type: 'sales',
+        status: demoTask.type === 'review_posted' ? 'completed' : demoTask.type === 'review_drafted' ? 'review' : 'running',
+        title: demoTask.type === 'new_review' 
+          ? `New Review from ${demoTask.review?.name || 'Customer'}`
+          : demoTask.type === 'review_drafted'
+          ? `Draft Response for ${demoTask.review?.name || 'Customer'}'s Review`
+          : `Posted Response to ${demoTask.review?.name || 'Customer'}'s Review`,
+        timestamp: demoTask.timestamp ? new Date(demoTask.timestamp).toLocaleTimeString() : 'Just now',
+        salesDetail: demoTask.review?.text || '',
+        messageDetail: demoTask.review?.draftResponse || demoTask.review?.postedResponse || ''
+      };
     }
-  }, [orgChartData]);
+    return null;
+  };
+
+  // Update tasks when org chart data changes or demo tasks are added
+  useEffect(() => {
+    const baseTasks = orgChartData ? generateTasksForAgents() : [];
+    
+    // Add demo environment tasks
+    const demoControlRoomTasks = demoTasks
+      .map(convertDemoTaskToControlRoomTask)
+      .filter((task): task is AgentTask => task !== null);
+    
+    // Merge and deduplicate by ID
+    const allTasks = [...baseTasks];
+    demoControlRoomTasks.forEach(demoTask => {
+      const existingIndex = allTasks.findIndex(t => t.id === demoTask.id);
+      if (existingIndex >= 0) {
+        allTasks[existingIndex] = demoTask; // Update existing
+      } else {
+        allTasks.push(demoTask); // Add new
+      }
+    });
+    
+    setTasks(allTasks);
+  }, [orgChartData, demoTasks]);
 
   // Simulate "Thinking" logs for the Security Agent
   useEffect(() => {
