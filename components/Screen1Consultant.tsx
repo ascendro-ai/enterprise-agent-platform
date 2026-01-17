@@ -281,8 +281,11 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
               // Update workflows in localStorage
               const existingIndex = currentWorkflows.findIndex((w: any) => w.name === extracted.workflowName);
               
+              let workflowId: string;
+              
               if (existingIndex >= 0) {
                 // Update existing workflow
+                workflowId = currentWorkflows[existingIndex].id;
                 currentWorkflows[existingIndex] = {
                   ...currentWorkflows[existingIndex],
                   steps: extracted.steps.map((step: any, index: number) => ({
@@ -294,7 +297,7 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
                 };
               } else {
                 // Create new workflow
-                const workflowId = `workflow-${Date.now()}`;
+                workflowId = `workflow-${Date.now()}`;
                 const newWorkflow = {
                   id: workflowId,
                   name: extracted.workflowName,
@@ -306,31 +309,48 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
                   })),
                 };
                 currentWorkflows.push(newWorkflow);
+              }
+              
+              // Auto-create a digital worker to orchestrate this workflow (for both new and updated workflows)
+              if (onOrgChartUpdate) {
+                const coordinatorName = `${extracted.workflowName} Coordinator`;
+                const currentOrgData = JSON.parse(JSON.stringify(currentOrgChart || { name: "You", type: 'human', role: "Owner", children: [] }));
                 
-                // Auto-create a digital worker to orchestrate this workflow
-                if (onOrgChartUpdate) {
-                  const coordinatorName = `${extracted.workflowName} Coordinator`;
-                  const currentOrgData = JSON.parse(JSON.stringify(currentOrgChart || { name: "You", type: 'human', role: "Owner", children: [] }));
-                  
-                  // Add digital worker as a child of "You"
-                  if (!currentOrgData.children) {
-                    currentOrgData.children = [];
-                  }
-                  
-                  // Check if coordinator already exists
-                  const existingCoordinator = currentOrgData.children.find((child: any) => 
-                    child.name === coordinatorName && child.type === 'ai'
+                // Add digital worker as a child of "You"
+                if (!currentOrgData.children) {
+                  currentOrgData.children = [];
+                }
+                
+                // Check if coordinator already exists
+                const existingCoordinator = currentOrgData.children.find((child: any) => 
+                  child.name === coordinatorName && child.type === 'ai'
+                );
+                
+                if (!existingCoordinator) {
+                  // Find if this workflow is already assigned to another coordinator
+                  const workflowAssignedTo = currentOrgData.children.find((child: any) => 
+                    child.assignedWorkflows && child.assignedWorkflows.includes(workflowId)
                   );
                   
-                  if (!existingCoordinator) {
+                  if (!workflowAssignedTo) {
                     currentOrgData.children.push({
                       name: coordinatorName,
                       type: 'ai',
                       role: `Orchestrates ${extracted.workflowName}`,
-                      status: 'active',
+                      status: 'inactive', // Start as inactive - user must activate manually
                       assignedWorkflows: [workflowId]
                     });
                     
+                    // Update org chart
+                    onOrgChartUpdate(currentOrgData);
+                  }
+                } else {
+                  // Coordinator exists, make sure workflow is assigned to it
+                  if (!existingCoordinator.assignedWorkflows || !existingCoordinator.assignedWorkflows.includes(workflowId)) {
+                    existingCoordinator.assignedWorkflows = [
+                      ...(existingCoordinator.assignedWorkflows || []),
+                      workflowId
+                    ];
                     // Update org chart
                     onOrgChartUpdate(currentOrgData);
                   }

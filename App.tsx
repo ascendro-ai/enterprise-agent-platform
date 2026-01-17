@@ -14,7 +14,7 @@ interface NodeData {
   type: 'ai' | 'human';
   role?: string;
   img?: string;
-  status?: 'active' | 'needs_attention';
+  status?: 'active' | 'inactive' | 'needs_attention';
   assignedWorkflows?: string[]; // Array of workflow IDs assigned to this stakeholder
   children?: NodeData[];
 }

@@ -18,6 +18,14 @@ interface AgentTask {
   inventoryDetail?: string;
   logisticsDetail?: string;
   salesDetail?: string;
+  // Workflow execution properties
+  workflowId?: string;
+  workflowName?: string;
+  stepId?: string;
+  stepLabel?: string;
+  executionId?: string;
+  stepNumber?: number;
+  totalSteps?: number;
 }
 
 interface NodeData {
@@ -25,7 +33,7 @@ interface NodeData {
   type: 'ai' | 'human';
   role?: string;
   img?: string;
-  status?: 'active' | 'needs_attention';
+  status?: 'active' | 'inactive' | 'needs_attention';
   children?: NodeData[];
 }
 
@@ -41,7 +49,7 @@ const Screen4ControlRoom: React.FC<Screen4ControlRoomProps> = ({ orgChartData, d
   const extractAgents = (node: NodeData, parentDept?: string): Array<{ name: string; dept: string; status?: string }> => {
     const agents: Array<{ name: string; dept: string; status?: string }> = [];
     
-    if (node.type === 'ai' && node.status === 'active') {
+    if (node.type === 'ai' && (node.status === 'active' || node.status === 'inactive')) {
       agents.push({ name: node.name, dept: parentDept || 'Unassigned', status: node.status });
     }
     
@@ -143,6 +151,81 @@ const Screen4ControlRoom: React.FC<Screen4ControlRoomProps> = ({ orgChartData, d
     }
     return null;
   };
+
+  // Listen for workflow execution events
+  useEffect(() => {
+    const handleControlRoomUpdate = (event: CustomEvent) => {
+      const update = event.detail;
+      
+      switch (update.type) {
+        case 'step_started':
+          setTasks(prev => {
+            const taskId = `workflow-${update.executionId}-${update.stepId}`;
+            const existingIndex = prev.findIndex(t => t.id === taskId);
+            const newTask: AgentTask = {
+              id: taskId,
+              agentName: update.agentName || 'Unknown',
+              type: 'sales', // Default type, can be inferred from workflow
+              status: 'running',
+              title: `${update.workflowName || 'Workflow'} - Step ${update.stepNumber || '?'}: ${update.stepLabel || ''}`,
+              timestamp: new Date().toLocaleTimeString(),
+              workflowId: update.workflowId,
+              workflowName: update.workflowName,
+              stepId: update.stepId,
+              stepLabel: update.stepLabel,
+              executionId: update.executionId,
+              stepNumber: update.stepNumber,
+              totalSteps: update.totalSteps,
+              messageDetail: `Executing: ${update.stepLabel || ''}`
+            };
+            
+            if (existingIndex >= 0) {
+              const updated = [...prev];
+              updated[existingIndex] = newTask;
+              return updated;
+            } else {
+              return [...prev, newTask];
+            }
+          });
+          break;
+          
+        case 'step_completed':
+          setTasks(prev => prev.map(task => 
+            task.executionId === update.executionId && task.stepId === update.stepId
+              ? { 
+                  ...task, 
+                  status: 'completed',
+                  messageDetail: `Completed: ${update.stepLabel || ''}\n${JSON.stringify(update.result || {}, null, 2)}`
+                }
+              : task
+          ));
+          break;
+          
+        case 'step_failed':
+          setTasks(prev => prev.map(task => 
+            task.executionId === update.executionId && task.stepId === update.stepId
+              ? { 
+                  ...task, 
+                  status: 'review',
+                  messageDetail: `Error: ${update.error || 'Unknown error'}\nStep: ${update.stepLabel || ''}`
+                }
+              : task
+          ));
+          break;
+          
+        case 'workflow_completed':
+          // Optionally show a notification or update all tasks
+          console.log(`Workflow completed: ${update.workflowName}`);
+          break;
+      }
+    };
+    
+    window.addEventListener('controlRoomUpdate', handleControlRoomUpdate as EventListener);
+    
+    return () => {
+      window.removeEventListener('controlRoomUpdate', handleControlRoomUpdate as EventListener);
+    };
+  }, []);
 
   // Update tasks when org chart data changes or demo tasks are added
   useEffect(() => {

@@ -5,6 +5,8 @@ import { Bot, User, Layers, Box, Settings, ZoomIn, Play, X, Camera, Slack, Globe
 import { buildAgent, extractAgentContext, processTeamArchitectRequest, extractPeopleFromConversation } from '../services/geminiService';
 import GmailAuth from './GmailAuth';
 import { isAuthenticated as isGmailAuthenticated } from '../services/gmailService';
+import { checkWorkflowReadiness, getWorkflowById } from '../services/workflowReadinessService';
+import { startWorkflowExecution } from '../services/workflowExecutionService';
 
 // Type declaration for Web Speech API
 interface SpeechRecognition extends EventTarget {
@@ -31,7 +33,7 @@ interface NodeData {
   type: 'ai' | 'human';
   role?: string;
   img?: string;
-  status?: 'active' | 'needs_attention';
+  status?: 'active' | 'inactive' | 'needs_attention';
   children?: NodeData[];
 }
 
@@ -295,7 +297,7 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
                     setBlueprint({
                       greenList: context.blueprint.greenList || [],
                       redList: context.blueprint.redList || [],
-                      flowSteps: context.blueprint.flowSteps || []
+                      flowSteps: (context.blueprint as any).flowSteps || []
                     });
                   }
                 } catch (error) {
@@ -629,7 +631,7 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
         
         // 2. Active (Green)
         if (d.data.status === 'active') {
-             node.append("rect")
+             const activeBadge = node.append("rect")
                 .attr("x", badgeX) 
                 .attr("y", badgeY)
                 .attr("width", badgeWidth)
@@ -651,6 +653,52 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
                 .style("text-transform", "uppercase")
                 .style("letter-spacing", "0.5px")
                 .text("Active");
+            
+            // Make clickable if it's a digital worker with assigned workflows
+            if (d.data.assignedWorkflows && d.data.assignedWorkflows.length > 0) {
+              activeBadge
+                .style("cursor", "pointer")
+                .on("click", (event) => {
+                  event.stopPropagation();
+                  toggleDigitalWorkerStatus(d.data.name, d.data.status);
+                });
+            }
+        }
+        
+        // 3. Inactive (Gray) - for digital workers
+        if (d.data.status === 'inactive' || (!d.data.status && d.data.assignedWorkflows)) {
+          const inactiveBadge = node.append("rect")
+                .attr("x", badgeX) 
+                .attr("y", badgeY)
+                .attr("width", badgeWidth)
+                .attr("height", 18)
+                .attr("rx", 9)
+                .attr("fill", "#9CA3AF")
+                .attr("stroke", "white")
+                .attr("stroke-width", 1.5);
+            
+            node.append("text")
+                .attr("x", badgeX + badgeWidth / 2)
+                .attr("y", badgeY + 9)
+                .attr("text-anchor", "middle")
+                .attr("dy", "0.35em")
+                .style("font-family", "Inter, sans-serif")
+                .style("font-size", "9px")
+                .style("fill", "white")
+                .style("font-weight", "600")
+                .style("text-transform", "uppercase")
+                .style("letter-spacing", "0.5px")
+                .text("Inactive");
+            
+            // Make clickable if it's a digital worker with assigned workflows
+            if (d.data.assignedWorkflows && d.data.assignedWorkflows.length > 0) {
+              inactiveBadge
+                .style("cursor", "pointer")
+                .on("click", (event) => {
+                  event.stopPropagation();
+                  toggleDigitalWorkerStatus(d.data.name, d.data.status || 'inactive');
+                });
+            }
         }
       }
     });
@@ -698,7 +746,7 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
       });
   };
 
-  const updateAgentStatus = (agentName: string, status: 'active' | 'needs_attention') => {
+  const updateAgentStatus = (agentName: string, status: 'active' | 'inactive' | 'needs_attention') => {
        setGraphData(prev => {
           const newData = JSON.parse(JSON.stringify(prev)); 
           const updateRecursive = (node: any) => {
@@ -712,6 +760,75 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
           updateRecursive(newData);
           return newData;
       });
+  };
+
+  // Toggle digital worker status (inactive <-> active)
+  const toggleDigitalWorkerStatus = async (workerName: string, currentStatus: 'active' | 'inactive' | 'needs_attention' | undefined) => {
+    const newStatus = currentStatus === 'active' ? 'inactive' : 'active';
+    
+    // Find the worker node
+    const findWorker = (node: any): any => {
+      if (node.name === workerName && node.type === 'ai' && node.assignedWorkflows) {
+        return node;
+      }
+      if (node.children) {
+        for (const child of node.children) {
+          const found = findWorker(child);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    
+    const worker = findWorker(graphData);
+    if (!worker) return;
+    
+    // If activating, check if workflow is ready
+    if (newStatus === 'active' && worker.assignedWorkflows && worker.assignedWorkflows.length > 0) {
+      const workflowId = worker.assignedWorkflows[0];
+      const workflow = getWorkflowById(workflowId);
+      
+      if (workflow) {
+        const readiness = checkWorkflowReadiness(workflow);
+        
+        if (!readiness.isReady) {
+          alert(`Cannot activate: ${readiness.missingSteps.length} step(s) still need agent configuration:\n${readiness.missingSteps.map(s => `- ${s.stepLabel}`).join('\n')}`);
+          return;
+        }
+        
+        // Start workflow execution
+        try {
+          await startWorkflowExecution(workflowId, worker);
+        } catch (error: any) {
+          console.error('Error starting workflow execution:', error);
+          alert(`Error starting workflow: ${error.message}`);
+          return;
+        }
+      }
+    }
+    
+    // Update status
+    updateAgentStatus(workerName, newStatus);
+    
+    // Update org chart
+    if (onOrgChartUpdate) {
+      setGraphData(prev => {
+        const updated = JSON.parse(JSON.stringify(prev));
+        const updateNode = (node: any): boolean => {
+          if (node.name === workerName && node.type === 'ai') {
+            node.status = newStatus;
+            return true;
+          }
+          if (node.children) {
+            return node.children.some((child: any) => updateNode(child));
+          }
+          return false;
+        };
+        updateNode(updated);
+        onOrgChartUpdate(updated);
+        return updated;
+      });
+    }
   };
 
   // --- Handlers ---
@@ -850,7 +967,7 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
           setBlueprint({
             greenList: result.blueprint.greenList || [],
             redList: result.blueprint.redList || [],
-            flowSteps: result.blueprint.flowSteps || []
+            flowSteps: (result.blueprint as any).flowSteps || []
           });
         }
         // Otherwise, merge with existing blueprint to preserve context
@@ -859,7 +976,7 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
           setBlueprint(prev => ({
             greenList: prev.greenList.length > 0 ? prev.greenList : (builderContext.blueprint?.greenList || []),
             redList: prev.redList.length > 0 ? prev.redList : (builderContext.blueprint?.redList || []),
-            flowSteps: prev.flowSteps.length > 0 ? prev.flowSteps : (builderContext.blueprint?.flowSteps || [])
+            flowSteps: prev.flowSteps.length > 0 ? prev.flowSteps : ((builderContext.blueprint as any)?.flowSteps || [])
           }));
         }
 
