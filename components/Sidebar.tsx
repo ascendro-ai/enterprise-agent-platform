@@ -16,6 +16,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentScreen, onScreenChange }) => {
 
   const operationsItems = [
     { id: Screen.CONTROL_ROOM, icon: MonitorPlay, label: 'Control Room' },
+    { id: Screen.DEMO_ENVIRONMENT, icon: FlaskConical, label: 'Demo Environment' },
     // { id: Screen.TEST_SUITE, icon: FlaskConical, label: 'Test Suite' }, // Temporarily hidden
   ];
 

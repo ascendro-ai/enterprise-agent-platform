@@ -101,6 +101,7 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
   const [isConfigured, setIsConfigured] = useState(false);
   const [builderStep, setBuilderStep] = useState(0);
   const [isBuilderTyping, setIsBuilderTyping] = useState(false);
+  const [builderContext, setBuilderContext] = useState<{ summary?: string; blueprint?: { greenList: string[]; redList: string[]; flowSteps: Array<{ label: string; type: 'trigger' | 'action' | 'decision' | 'end' }> } } | null>(null);
   
   // Voice recognition state for agent builder
   const [isBuilderListening, setIsBuilderListening] = useState(false);
@@ -251,6 +252,9 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
               const loadAgentContext = async () => {
                 try {
                   const context = await extractAgentContext(selectedAgent, consultantHistory);
+                  
+                  // Store context for use in buildAgent calls
+                  setBuilderContext(context);
                   
                   // Set summary as first message
                   setBuilderMessages([{ sender: 'system', text: context.summary }]);
@@ -768,8 +772,8 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
           return;
         }
 
-        // Call Gemini API for agent builder
-        const result = await buildAgent(selectedAgent || 'Agent', text, conversationHistory);
+        // Call Gemini API for agent builder with consultant context
+        const result = await buildAgent(selectedAgent || 'Agent', text, conversationHistory, builderContext || undefined);
         
         // Check if response mentions needing Google login
         const responseLower = result.response.toLowerCase();
@@ -795,21 +799,27 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
           .replace(/#{1,6}\s/g, '')        // Remove headers
           .trim();
         
-        // Use blueprint from Gemini if provided, otherwise use a default structure
-        const newBlueprint: AgentBlueprint = result.blueprint || {
-          greenList: ["Execute assigned tasks", "Follow operational guidelines"],
-          redList: ["Do not violate safety protocols", "Do not exceed budget limits"],
-          flowSteps: [
-            { label: "Trigger", type: 'trigger' },
-            { label: "Process", type: 'action' },
-            { label: "Complete", type: 'end' }
-          ]
-        };
+        // Update blueprint if provided in response, otherwise keep existing
+        if (result.blueprint) {
+          setBlueprint({
+            greenList: result.blueprint.greenList || [],
+            redList: result.blueprint.redList || [],
+            flowSteps: result.blueprint.flowSteps || []
+          });
+        }
+        // Otherwise, merge with existing blueprint to preserve context
+        else if (builderContext?.blueprint) {
+          // Keep existing blueprint but allow it to be refined through conversation
+          setBlueprint(prev => ({
+            greenList: prev.greenList.length > 0 ? prev.greenList : (builderContext.blueprint?.greenList || []),
+            redList: prev.redList.length > 0 ? prev.redList : (builderContext.blueprint?.redList || []),
+            flowSteps: prev.flowSteps.length > 0 ? prev.flowSteps : (builderContext.blueprint?.flowSteps || [])
+          }));
+        }
 
         // Update UI
         setIsBuilderTyping(false);
         setBuilderMessages(prev => [...prev, {sender: 'system', text: systemResponse}]);
-        setBlueprint(newBlueprint);
         setBuilderStep(1); // Advance step
 
         // Final Deployment after a delay

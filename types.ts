@@ -5,6 +5,7 @@ export enum Screen {
   CONTROL_ROOM = 'CONTROL_ROOM',
   TEST_SUITE = 'TEST_SUITE',
   ANALYTICS = 'ANALYTICS',
+  DEMO_ENVIRONMENT = 'DEMO_ENVIRONMENT',
 }
 
 export interface ChatMessage {

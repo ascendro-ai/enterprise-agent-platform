@@ -118,10 +118,14 @@ Remember: The organizational structure is being built automatically in the backg
 };
 
 // Agent Builder conversation - configuring individual agents
+// NOTE: This is a SEPARATE LLM from the Team Architect. This LLM focuses on configuring
+// individual agent behavior, technical implementation, and operational blueprints.
+// The Team Architect (processTeamArchitectRequest) handles org structure modifications.
 export const buildAgent = async (
   agentName: string,
   userInput: string,
-  conversationHistory: Array<{ role: 'user' | 'model', parts: Array<{ text: string }> }> = []
+  conversationHistory: Array<{ role: 'user' | 'model', parts: Array<{ text: string }> }> = [],
+  consultantContext?: { summary?: string; blueprint?: { greenList: string[]; redList: string[]; flowSteps: Array<{ label: string; type: 'trigger' | 'action' | 'decision' | 'end' }> } }
 ): Promise<{ response: string; blueprint?: { greenList: string[]; redList: string[]; flowSteps: Array<{ label: string; type: 'trigger' | 'action' | 'decision' | 'end' }> } }> => {
   const client = getClient();
   if (!client) {
@@ -150,11 +154,27 @@ export const buildAgent = async (
     // NOTE: This is the AGENT BUILDER LLM - separate from Team Architect
     // This LLM focuses on individual agent configuration, NOT org structure changes
     if (conversationHistory.length === 0) {
+      const contextInfo = consultantContext ? `
+      
+CONTEXT FROM CONSULTANT CONVERSATION:
+${consultantContext.summary || 'No summary available'}
+
+${consultantContext.blueprint ? `
+EXISTING BLUEPRINT FROM CONVERSATION:
+- Affirmative Actions (Green List): ${consultantContext.blueprint.greenList.join(', ') || 'None yet'}
+- Hard Limits (Red List): ${consultantContext.blueprint.redList.join(', ') || 'None yet'}
+- Flow Steps: ${consultantContext.blueprint.flowSteps.map(s => s.label).join(' → ') || 'None yet'}
+
+Use this as a starting point and refine/expand it based on the user's responses.` : ''}
+
+Your task is to refine and complete this blueprint based on the user's input.` : '';
+
       contents.unshift({
         role: 'user' as const,
         parts: [{ text: `You are the Agent Builder, a specialized AI architect focused on configuring individual AI agents. You are SEPARATE from the Team Architect (which handles organizational structure).
 
 Your role is to map the end-to-end TECHNICAL IMPLEMENTATION for the agent named "${agentName}" before deployment.
+${contextInfo}
 
 CRITICAL: Focus on TECHNICAL DETAILS and HOW things work:
 - How does the agent access external services? (e.g., "I'll need you to log into Google to access Google Reviews")
@@ -162,6 +182,20 @@ CRITICAL: Focus on TECHNICAL DETAILS and HOW things work:
 - What authentication or credentials are required?
 - What are the exact steps to complete each action?
 - How should the agent handle errors or edge cases?
+
+IMPORTANT: After each response, you MUST extract and return blueprint information in JSON format:
+{
+  "response": "Your conversational response...",
+  "blueprint": {
+    "greenList": ["action 1", "action 2"],
+    "redList": ["constraint 1", "constraint 2"],
+    "flowSteps": [
+      {"label": "Trigger description", "type": "trigger"},
+      {"label": "Action description", "type": "action"},
+      {"label": "End description", "type": "end"}
+    ]
+  }
+}
 
 Ask clarifying questions to understand:
 1. What should this agent do? (affirmative actions - green list)
@@ -173,6 +207,7 @@ IMPORTANT:
 - If the agent needs to access external services (like Google, APIs, etc.), ask the user to log in or provide access. You can request things like "I'll need you to log into Google so I can access your Google Reviews" - the platform will handle showing a login screen.
 - You do NOT handle organizational structure changes (that's the Team Architect's job)
 - You focus ONLY on configuring this specific agent's behavior and technical implementation
+- ALWAYS return blueprint updates in your responses so the UI can automatically update
 
 Be thorough and ask specific questions about both WHAT and HOW. The user just said: ${userInput}` }]
       });
@@ -181,9 +216,25 @@ Be thorough and ask specific questions about both WHAT and HOW. The user just sa
     // Build a simple prompt string from the conversation
     let prompt = '';
     if (conversationHistory.length === 0) {
+      const contextInfo = consultantContext ? `
+      
+CONTEXT FROM CONSULTANT CONVERSATION:
+${consultantContext.summary || 'No summary available'}
+
+${consultantContext.blueprint ? `
+EXISTING BLUEPRINT FROM CONVERSATION:
+- Affirmative Actions (Green List): ${consultantContext.blueprint.greenList.join(', ') || 'None yet'}
+- Hard Limits (Red List): ${consultantContext.blueprint.redList.join(', ') || 'None yet'}
+- Flow Steps: ${consultantContext.blueprint.flowSteps.map(s => s.label).join(' → ') || 'None yet'}
+
+Use this as a starting point and refine/expand it based on the user's responses.` : ''}
+
+Your task is to refine and complete this blueprint based on the user's input.` : '';
+
       prompt = `You are the Agent Builder, a specialized AI architect focused on configuring individual AI agents. You are SEPARATE from the Team Architect (which handles organizational structure).
 
 Your role is to map the end-to-end TECHNICAL IMPLEMENTATION for the agent named "${agentName}" before deployment.
+${contextInfo}
 
 CRITICAL: Focus on TECHNICAL DETAILS and HOW things work:
 - How does the agent access external services? (e.g., "I'll need you to log into Google to access Google Reviews")
@@ -191,6 +242,20 @@ CRITICAL: Focus on TECHNICAL DETAILS and HOW things work:
 - What authentication or credentials are required?
 - What are the exact steps to complete each action?
 - How should the agent handle errors or edge cases?
+
+IMPORTANT: After each response, you MUST extract and return blueprint information in JSON format:
+{
+  "response": "Your conversational response...",
+  "blueprint": {
+    "greenList": ["action 1", "action 2"],
+    "redList": ["constraint 1", "constraint 2"],
+    "flowSteps": [
+      {"label": "Trigger description", "type": "trigger"},
+      {"label": "Action description", "type": "action"},
+      {"label": "End description", "type": "end"}
+    ]
+  }
+}
 
 Ask clarifying questions to understand:
 1. What should this agent do? (affirmative actions - green list)
@@ -202,6 +267,7 @@ IMPORTANT:
 - If the agent needs to access external services (like Google, APIs, etc.), ask the user to log in or provide access. You can request things like "I'll need you to log into Google so I can access your Google Reviews" - the platform will handle showing a login screen.
 - You do NOT handle organizational structure changes (that's the Team Architect's job)
 - You focus ONLY on configuring this specific agent's behavior and technical implementation
+- ALWAYS return blueprint updates in your responses so the UI can automatically update
 
 Be thorough and ask specific questions about both WHAT and HOW. The user just said: ${userInput}`;
     } else {
@@ -232,8 +298,28 @@ Remember: You focus ONLY on this agent's configuration, NOT organizational struc
 
     const responseText = response.text || "I couldn't generate a response right now.";
 
-    // Try to extract blueprint information from response (basic parsing)
-    // For now, return just the response - we can enhance this later with structured output
+    // Try to extract blueprint information from response
+    // Look for JSON in the response
+    const jsonMatch = responseText.match(/\{[\s\S]*"blueprint"[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          response: parsed.response || responseText.replace(jsonMatch[0], '').trim(),
+          blueprint: parsed.blueprint ? {
+            greenList: parsed.blueprint.greenList || [],
+            redList: parsed.blueprint.redList || [],
+            flowSteps: parsed.blueprint.flowSteps || []
+          } : undefined
+        };
+      } catch (e) {
+        console.error("Error parsing blueprint JSON:", e);
+      }
+    }
+
+    // If no JSON found, try to extract blueprint from text using LLM
+    // For now, return response and let the UI handle blueprint updates from context
+    // The blueprint should already be populated from extractAgentContext
     return {
       response: responseText
     };

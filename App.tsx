@@ -5,6 +5,7 @@ import Screen1Consultant from './components/Screen1Consultant';
 import Screen2OrgChart from './components/Screen2OrgChart';
 import Screen4ControlRoom from './components/Screen4ControlRoom';
 import Screen5TestSuite from './components/Screen5TestSuite';
+import Screen6DemoEnvironment from './components/Screen6DemoEnvironment';
 import { Screen, ChatMessage } from './types';
 
 // Shared type for org chart node data
