@@ -1,11 +1,11 @@
 
 export enum Screen {
   CONSULTANT = 'CONSULTANT',
+  WORKFLOWS = 'WORKFLOWS',
   ORG_CHART = 'ORG_CHART',
   CONTROL_ROOM = 'CONTROL_ROOM',
   TEST_SUITE = 'TEST_SUITE',
   ANALYTICS = 'ANALYTICS',
-  DEMO_ENVIRONMENT = 'DEMO_ENVIRONMENT',
 }
 
 export interface ChatMessage {
@@ -15,7 +15,8 @@ export interface ChatMessage {
   timestamp: Date;
 }
 
-export interface WorkflowStep {
+// Legacy interface - kept for backward compatibility
+export interface WorkflowStepLegacy {
   id: string;
   label: string;
   completed: boolean;
@@ -44,4 +45,29 @@ export interface LogEntry {
   target?: string;
   timestamp: string;
   status: 'success' | 'info' | 'warning';
+}
+
+export interface WorkflowStep {
+  id: string;
+  label: string;
+  type: 'trigger' | 'action' | 'decision' | 'end';
+  assignedTo?: {
+    type: 'ai' | 'human';
+    agentId?: string;
+    agentName?: string;
+  };
+  order: number;
+}
+
+export interface Workflow {
+  id: string;
+  name: string;
+  description?: string;
+  steps: WorkflowStep[];
+  assignedTo?: {
+    stakeholderId?: string;
+    stakeholderName?: string;
+    stakeholderType?: 'ai' | 'human';
+  };
+  status?: 'draft' | 'active' | 'paused';
 }

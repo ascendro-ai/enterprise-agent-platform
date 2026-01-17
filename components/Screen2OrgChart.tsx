@@ -1,10 +1,10 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import * as d3 from 'd3';
-import { Bot, User, Layers, Box, Settings, ZoomIn, Play, X, Camera, Slack, Globe, ToggleRight, ToggleLeft, GripVertical, Send, AlertTriangle, CheckCircle, Edit2, Map, Truck, Plus, ImageIcon, Mic, ArrowRight, Shield, ShieldAlert, Zap, ArrowRightCircle, GitBranch, AlertCircle, ChevronDown } from 'lucide-react';
-import { buildAgent, extractAgentContext, processTeamArchitectRequest } from '../services/geminiService';
-import FakeGoogleLogin from './FakeGoogleLogin';
-import FakeGoogleReviews from './FakeGoogleReviews';
+import { Bot, User, Layers, Box, Settings, ZoomIn, Play, X, Camera, Slack, Globe, ToggleRight, ToggleLeft, GripVertical, Send, AlertTriangle, CheckCircle, Edit2, Map, Truck, Plus, ImageIcon, Mic, ArrowRight, Shield, ShieldAlert, Zap, ArrowRightCircle, GitBranch, AlertCircle, ChevronDown, FileText } from 'lucide-react';
+import { buildAgent, extractAgentContext, processTeamArchitectRequest, extractPeopleFromConversation } from '../services/geminiService';
+import GmailAuth from './GmailAuth';
+import { isAuthenticated as isGmailAuthenticated } from '../services/gmailService';
 
 // Type declaration for Web Speech API
 interface SpeechRecognition extends EventTarget {
@@ -80,6 +80,7 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
       onOrgChartUpdate(graphData);
     }
   }, [graphData, onOrgChartUpdate]);
+  
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [selectedDepartment, setSelectedDepartment] = useState<string>('All Teams');
   const [isTeamDropdownOpen, setIsTeamDropdownOpen] = useState(false);
@@ -108,10 +109,40 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
   const [builderSpeechRecognitionAvailable, setBuilderSpeechRecognitionAvailable] = useState(false);
   const builderRecognitionRef = useRef<SpeechRecognition | null>(null);
   
-  // Fake Google login/Reviews state
-  const [showGoogleLogin, setShowGoogleLogin] = useState(false);
-  const [showGoogleReviews, setShowGoogleReviews] = useState(false);
+  // File upload state for agent builder
+  const [builderUploadedFiles, setBuilderUploadedFiles] = useState<File[]>([]);
+  const builderFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Draggable bubbles state for people from conversation
+  interface BubblePerson {
+    id: string;
+    name: string;
+    type: 'human' | 'ai';
+    role?: string;
+    x: number;
+    y: number;
+  }
+  const [bubblePeople, setBubblePeople] = useState<BubblePerson[]>([]);
+  const [draggedBubble, setDraggedBubble] = useState<string | null>(null);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const bubblesContainerRef = useRef<HTMLDivElement>(null);
+  
+  // Gmail authentication state
+  const [showGmailAuth, setShowGmailAuth] = useState(false);
   const [isGoogleLoggedIn, setIsGoogleLoggedIn] = useState(false);
+  
+  // Check Gmail auth status on mount and handle OAuth callback
+  useEffect(() => {
+    setIsGoogleLoggedIn(isGmailAuthenticated());
+    
+    // Check if we're returning from OAuth callback
+    const urlParams = new URLSearchParams(window.location.search);
+    const code = urlParams.get('code');
+    if (code && !showGmailAuth) {
+      // We have an OAuth code, show the auth component to process it
+      setShowGmailAuth(true);
+    }
+  }, []);
 
   // Agent Blueprint State (The Right Column Data)
   const [blueprint, setBlueprint] = useState<AgentBlueprint>({
@@ -763,29 +794,44 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
       }));
 
       try {
-        // Check if user is asking to log into Google
+        // Check if user is asking to log into Gmail
         const textLower = text.toLowerCase();
-        if (textLower.includes('log in') || textLower.includes('login') || textLower.includes('sign in') || textLower.includes('authenticate')) {
-          setShowGoogleLogin(true);
+        if (textLower.includes('log in') || textLower.includes('login') || textLower.includes('sign in') || textLower.includes('authenticate') || textLower.includes('gmail')) {
+          setShowGmailAuth(true);
           setIsBuilderTyping(false);
-          setBuilderMessages(prev => [...prev, {sender: 'system', text: 'I\'ve opened the Google login screen for you. Please log in to continue.'}]);
+          setBuilderMessages(prev => [...prev, {sender: 'system', text: 'I\'ve opened the Gmail authentication screen for you. Please authenticate to continue.'}]);
           return;
         }
 
-        // Call Gemini API for agent builder with consultant context
-        const result = await buildAgent(selectedAgent || 'Agent', text, conversationHistory, builderContext || undefined);
+        // Convert files to base64 for sending to LLM
+        const fileToBase64 = (file: File): Promise<string> => {
+          return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const base64 = (reader.result as string).split(',')[1];
+              resolve(base64);
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+          });
+        };
+
+        const fileAttachments = await Promise.all(
+          builderUploadedFiles.map(async (file) => ({
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            content: await fileToBase64(file),
+          }))
+        );
+
+        // Call Gemini API for agent builder with consultant context and file attachments
+        const result = await buildAgent(selectedAgent || 'Agent', text, conversationHistory, builderContext || undefined, fileAttachments.length > 0 ? fileAttachments : undefined);
         
-        // Check if response mentions needing Google login
+        // Check if response mentions needing Gmail login
         const responseLower = result.response.toLowerCase();
-        if (responseLower.includes('log into google') || responseLower.includes('google login') || responseLower.includes('need you to log') || responseLower.includes('access google')) {
-          setShowGoogleLogin(true);
-        }
-        
-        // Check if response mentions Google Reviews
-        if (responseLower.includes('google reviews') || responseLower.includes('reviews page')) {
-          if (isGoogleLoggedIn) {
-            setShowGoogleReviews(true);
-          }
+        if (responseLower.includes('log into gmail') || responseLower.includes('gmail login') || responseLower.includes('need you to log') || responseLower.includes('access gmail') || responseLower.includes('authenticate gmail')) {
+          setShowGmailAuth(true);
         }
         
         // Use Gemini response and strip markdown
@@ -817,6 +863,9 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
           }));
         }
 
+        // Clear uploaded files after sending
+        setBuilderUploadedFiles([]);
+        
         // Update UI
         setIsBuilderTyping(false);
         setBuilderMessages(prev => [...prev, {sender: 'system', text: systemResponse}]);
@@ -923,6 +972,97 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
       <div className="flex-1 relative overflow-hidden bg-dot-pattern" ref={wrapperRef}>
          {/* D3 SVG Container */}
          <svg ref={svgRef} width={dimensions.width} height={dimensions.height} className="block cursor-grab active:cursor-grabbing w-full h-full" />
+
+         {/* Draggable Bubbles Overlay - Show if we have people from conversation */}
+         {bubblePeople.length > 0 && (
+           <div 
+             ref={bubblesContainerRef}
+             className="absolute inset-0 pointer-events-none"
+             style={{ width: '100%', height: '100%' }}
+           >
+             {/* SVG for connectors */}
+             <svg className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 1 }}>
+               {bubblePeople.map((bubble, i) => {
+                 // Find nearby bubbles (within 250px)
+                 const nearbyBubbles = bubblePeople.filter((other, j) => {
+                   if (i === j) return false;
+                   const dx = other.x - bubble.x;
+                   const dy = other.y - bubble.y;
+                   const distance = Math.sqrt(dx * dx + dy * dy);
+                   return distance < 250;
+                 });
+
+                 return nearbyBubbles.map((nearby) => {
+                   const dx = nearby.x - bubble.x;
+                   const dy = nearby.y - bubble.y;
+                   const distance = Math.sqrt(dx * dx + dy * dy);
+                   const angle = Math.atan2(dy, dx);
+                   
+                   // Connection points on bubble edges (radius = 40)
+                   const startX = bubble.x + Math.cos(angle) * 40;
+                   const startY = bubble.y + Math.sin(angle) * 40;
+                   const endX = nearby.x - Math.cos(angle) * 40;
+                   const endY = nearby.y - Math.sin(angle) * 40;
+
+                   return (
+                     <line
+                       key={`${bubble.id}-${nearby.id}`}
+                       x1={startX}
+                       y1={startY}
+                       x2={endX}
+                       y2={endY}
+                       stroke="#a855f7"
+                       strokeWidth="2"
+                       strokeDasharray="4,4"
+                       opacity="0.4"
+                     />
+                   );
+                 });
+               })}
+             </svg>
+
+             {/* Draggable Bubbles */}
+             {bubblePeople.map((bubble) => (
+               <div
+                 key={bubble.id}
+                 className="absolute pointer-events-auto cursor-move"
+                 style={{
+                   left: `${bubble.x}px`,
+                   top: `${bubble.y}px`,
+                   transform: 'translate(-50%, -50%)',
+                   zIndex: 10,
+                 }}
+                 onMouseDown={(e) => {
+                   const rect = bubblesContainerRef.current?.getBoundingClientRect();
+                   if (rect) {
+                     setDraggedBubble(bubble.id);
+                     setDragOffset({
+                       x: e.clientX - rect.left - bubble.x,
+                       y: e.clientY - rect.top - bubble.y,
+                     });
+                   }
+                 }}
+               >
+                 <div
+                   className={`w-20 h-20 rounded-full flex flex-col items-center justify-center shadow-lg border-2 transition-all hover:scale-110 ${
+                     bubble.type === 'ai'
+                       ? 'bg-gradient-to-br from-purple-100 to-purple-200 border-purple-300'
+                       : 'bg-gradient-to-br from-yellow-100 to-yellow-200 border-yellow-300'
+                   }`}
+                 >
+                   {bubble.type === 'ai' ? (
+                     <Bot size={24} className="text-purple-600 mb-1" />
+                   ) : (
+                     <User size={24} className="text-yellow-600 mb-1" />
+                   )}
+                   <span className="text-xs font-semibold text-gray-800 text-center px-1 truncate w-full">
+                     {bubble.name}
+                   </span>
+                 </div>
+               </div>
+             ))}
+           </div>
+         )}
 
          {/* Legend / Tip */}
          <div className="absolute top-4 left-4 bg-white/80 backdrop-blur border border-gray-200 rounded-lg p-2 text-xs text-gray-500 shadow-sm pointer-events-none">
@@ -1182,7 +1322,55 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
                         {renderBuilderShortcuts()}
 
                         <div className="p-4 bg-white border-t border-gray-200">
+                             {/* Uploaded Files Display */}
+                             {builderUploadedFiles.length > 0 && (
+                               <div className="mb-2 flex flex-wrap gap-2">
+                                 {builderUploadedFiles.map((file, index) => (
+                                   <div key={index} className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5 text-sm">
+                                     <FileText size={14} className="text-blue-600" />
+                                     <span className="text-blue-900 font-medium">{file.name}</span>
+                                     <button
+                                       onClick={() => setBuilderUploadedFiles(prev => prev.filter((_, i) => i !== index))}
+                                       className="text-blue-600 hover:text-blue-800 transition-colors"
+                                     >
+                                       <X size={14} />
+                                     </button>
+                                   </div>
+                                 ))}
+                               </div>
+                             )}
+                             
                              <div className="relative flex items-center gap-2">
+                                 <input
+                                   type="file"
+                                   ref={builderFileInputRef}
+                                   onChange={(e) => {
+                                     const files = Array.from(e.target.files || []) as File[];
+                                     const validFiles = files.filter((file: File) => {
+                                       const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
+                                       const isPDF = file.name.endsWith('.pdf');
+                                       return isExcel || isPDF;
+                                     });
+                                     if (validFiles.length !== files.length) {
+                                       alert('Please upload only Excel (.xlsx, .xls) or PDF (.pdf) files.');
+                                     }
+                                     setBuilderUploadedFiles(prev => [...prev, ...validFiles]);
+                                     if (builderFileInputRef.current) {
+                                       builderFileInputRef.current.value = '';
+                                     }
+                                   }}
+                                   accept=".xlsx,.xls,.pdf"
+                                   multiple
+                                   className="hidden"
+                                 />
+                                 <button
+                                   onClick={() => builderFileInputRef.current?.click()}
+                                   className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded-lg transition-colors"
+                                   title="Upload Excel or PDF"
+                                 >
+                                   <Plus size={18} />
+                                 </button>
+                                 
                                  <input 
                                     className="flex-1 bg-gray-100 rounded-xl pl-4 pr-20 py-3 text-sm focus:ring-2 focus:ring-purple-500 outline-none" 
                                     placeholder="Instruct builder..."
@@ -1477,25 +1665,18 @@ const Screen2OrgChart: React.FC<Screen2OrgChartProps> = ({ orgChartData, onOrgCh
          `}</style>
       </div>
       
-      {/* Fake Google Login Modal */}
-      {showGoogleLogin && (
-        <FakeGoogleLogin
-          onClose={() => setShowGoogleLogin(false)}
-          onLogin={() => {
+      {/* Gmail Authentication Modal */}
+      {showGmailAuth && (
+        <GmailAuth
+          onAuthSuccess={() => {
+            setShowGmailAuth(false);
             setIsGoogleLoggedIn(true);
             setBuilderMessages(prev => [...prev, {
               sender: 'system',
-              text: 'Great! You\'re now logged into Google. I can now access your Google Reviews. Would you like me to show you the reviews page?'
+              text: 'Great! You\'re now authenticated with Gmail. I can now access your emails and send messages on your behalf.'
             }]);
           }}
-        />
-      )}
-      
-      {/* Fake Google Reviews Modal */}
-      {showGoogleReviews && (
-        <FakeGoogleReviews
-          onClose={() => setShowGoogleReviews(false)}
-          businessName={selectedAgent ? `${selectedAgent} - Reviews` : "Business Reviews"}
+          onClose={() => setShowGmailAuth(false)}
         />
       )}
     </div>

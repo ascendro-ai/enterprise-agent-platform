@@ -12,7 +12,8 @@ export default defineConfig(({ mode }) => {
       plugins: [react()],
       define: {
         'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+        'import.meta.env.VITE_GMAIL_CLIENT_ID': JSON.stringify(env.VITE_GMAIL_CLIENT_ID || '30119822639-s61ksf68v892gd9hppuiqf0424ldg0d1.apps.googleusercontent.com')
       },
       resolve: {
         alias: {

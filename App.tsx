@@ -3,18 +3,19 @@ import React, { useState } from 'react';
 import Sidebar from './components/Sidebar';
 import Screen1Consultant from './components/Screen1Consultant';
 import Screen2OrgChart from './components/Screen2OrgChart';
+import Screen3Workflows from './components/Screen3Workflows';
 import Screen4ControlRoom from './components/Screen4ControlRoom';
 import Screen5TestSuite from './components/Screen5TestSuite';
-import Screen6DemoEnvironment from './components/Screen6DemoEnvironment';
 import { Screen, ChatMessage } from './types';
 
-// Shared type for org chart node data
+// Shared type for stakeholder data (Your Team)
 interface NodeData {
   name: string;
   type: 'ai' | 'human';
   role?: string;
   img?: string;
   status?: 'active' | 'needs_attention';
+  assignedWorkflows?: string[]; // Array of workflow IDs assigned to this stakeholder
   children?: NodeData[];
 }
 
@@ -33,8 +34,32 @@ const App: React.FC = () => {
   // Store consultant conversation history for session persistence
   const [consultantMessages, setConsultantMessages] = useState<ChatMessage[]>([]);
   
-  // Shared state for tasks from Demo Environment to Control Room
-  const [demoEnvironmentTasks, setDemoEnvironmentTasks] = useState<any[]>([]);
+  // Store workflows - shared across components
+  const [workflows, setWorkflows] = useState<any[]>(() => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const saved = localStorage.getItem('workflows');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          return Array.isArray(parsed) ? parsed : [];
+        }
+      }
+    } catch (e) {
+      console.error('Error loading workflows:', e);
+    }
+    return [];
+  });
+
+  // Save workflows to localStorage whenever they change
+  React.useEffect(() => {
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.setItem('workflows', JSON.stringify(workflows));
+      }
+    } catch (e) {
+      console.error('Error saving workflows:', e);
+    }
+  }, [workflows]);
 
   const renderScreen = () => {
     switch (activeScreen) {
@@ -46,6 +71,13 @@ const App: React.FC = () => {
           onMessagesChange={setConsultantMessages}
           currentOrgChart={orgChartData}
         />;
+      case Screen.WORKFLOWS:
+        return <Screen3Workflows 
+          orgChartData={orgChartData}
+          consultantHistory={consultantMessages}
+          workflows={workflows}
+          onWorkflowsUpdate={setWorkflows}
+        />;
       case Screen.ORG_CHART:
         return <Screen2OrgChart 
           orgChartData={orgChartData} 
@@ -53,18 +85,9 @@ const App: React.FC = () => {
           consultantHistory={consultantMessages}
         />;
       case Screen.CONTROL_ROOM:
-        return <Screen4ControlRoom orgChartData={orgChartData} demoTasks={demoEnvironmentTasks} />;
+        return <Screen4ControlRoom orgChartData={orgChartData} demoTasks={[]} />;
       case Screen.TEST_SUITE:
         return <Screen5TestSuite />;
-      case Screen.DEMO_ENVIRONMENT:
-        return <Screen6DemoEnvironment 
-          orgChartData={orgChartData} 
-          onTaskCreated={(task) => {
-            // Add task to shared state for Control Room
-            setDemoEnvironmentTasks(prev => [...prev, task]);
-            console.log('Demo Environment task created:', task);
-          }} 
-        />;
       default:
         return <Screen1Consultant onOrgChartUpdate={setOrgChartData} />;
     }

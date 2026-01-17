@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowRight, Plus, Image as ImageIcon, Play, Mic } from 'lucide-react';
+import { ArrowRight, Plus, Image as ImageIcon, Play, Mic, X, FileText } from 'lucide-react';
 import { ChatMessage } from '../types';
-import { consultWorkflow, generateOrgStructure, updateOrgStructureIncrementally } from '../services/geminiService';
+import { consultWorkflow, generateOrgStructure, extractWorkflowFromConversation } from '../services/geminiService';
 
 // Type declaration for Web Speech API
 interface SpeechRecognition extends EventTarget {
@@ -56,6 +56,9 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
   const [speechRecognitionAvailable, setSpeechRecognitionAvailable] = useState(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   
+  // File upload state
+  const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -154,8 +157,47 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
   }, []);
 
 
+  // Handle file upload
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    const validFiles = files.filter(file => {
+      const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
+      const isPDF = file.name.endsWith('.pdf');
+      return isExcel || isPDF;
+    });
+
+    if (validFiles.length !== files.length) {
+      alert('Please upload only Excel (.xlsx, .xls) or PDF (.pdf) files.');
+    }
+
+    setUploadedFiles(prev => [...prev, ...validFiles]);
+    
+    // Reset input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  // Remove uploaded file
+  const removeFile = (index: number) => {
+    setUploadedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  // Convert file to base64 for sending to LLM
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64 = (reader.result as string).split(',')[1];
+        resolve(base64);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
   const handleSend = async () => {
-    if (!input.trim()) return;
+    if (!input.trim() && uploadedFiles.length === 0) return;
 
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
@@ -166,7 +208,9 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
 
     setMessages((prev) => [...prev, userMsg]);
     const userInput = input;
+    const filesToSend = [...uploadedFiles];
     setInput('');
+    setUploadedFiles([]);
     setIsTyping(true);
 
     // Build conversation history for Gemini
@@ -181,10 +225,20 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
     ).length;
 
     try {
-      // Call Gemini API with question count
-      let responseText = await consultWorkflow(userInput, conversationHistory, questionCount);
+      // Convert files to base64 and prepare file attachments
+      const fileAttachments = await Promise.all(
+        filesToSend.map(async (file) => ({
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          content: await fileToBase64(file),
+        }))
+      );
+
+      // Call Gemini API with question count and file attachments
+      let responseText = await consultWorkflow(userInput, conversationHistory, questionCount, fileAttachments);
       
-      // Strip markdown formatting (**, __, etc.)
+      // Strip markdown formatting (**, __, etc.) and question count displays
       responseText = responseText
         .replace(/\*\*(.*?)\*\*/g, '$1')  // Remove **bold**
         .replace(/\*(.*?)\*/g, '$1')      // Remove *italic*
@@ -192,6 +246,8 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
         .replace(/_(.*?)_/g, '$1')       // Remove _italic_
         .replace(/`(.*?)`/g, '$1')       // Remove `code`
         .replace(/#{1,6}\s/g, '')        // Remove headers
+        .replace(/\(Total questions asked:.*?\)/gi, '')  // Remove question count displays
+        .replace(/Total questions asked:.*?(\n|$)/gi, '')  // Remove question count on new line
         .trim();
 
       const systemMsg: ChatMessage = {
@@ -203,43 +259,99 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
       
       setMessages((prev) => [...prev, systemMsg]);
       
-      // Background: Continuously update org structure as conversation progresses
-      // This happens silently without interrupting the conversation
-      const updateOrgStructureInBackground = async () => {
+      // Background: Extract and create workflows from conversation
+      // NOTE: Org structure is no longer auto-populated - users build it manually in "Your Team" tab
+      const extractWorkflowInBackground = async () => {
         try {
           const fullConversation = [...messages, userMsg, systemMsg]
             .map(msg => `${msg.sender === 'user' ? 'User' : 'Assistant'}: ${msg.text}`)
-            .join('\n');
+            .join('\n\n');
           
-          // Get current org structure from parent (if available)
-          const currentStructure = currentOrgChart || null;
-          
-          // Update org structure incrementally in the background
-          const updatedStructure = await updateOrgStructureIncrementally(
-            fullConversation,
-            currentStructure
-          );
-          
-          // Only update if we got a valid structure with children
-          if (updatedStructure && onOrgChartUpdate) {
-            // Ensure name is "You" to match existing structure
-            if (updatedStructure.name !== "You") {
-              updatedStructure.name = "You";
+            // Only extract if conversation has meaningful content (at least 100 chars and 2+ messages)
+            // Also check that the conversation actually mentions workflow-related content
+            const hasWorkflowContent = fullConversation.toLowerCase().match(/\b(workflow|automate|process|step|task|agent|email|excel|pdf|gmail|reply|send|update|generate|calculate|notify)\b/);
+            if (fullConversation.length > 100 && (messages.length + 2) >= 2 && hasWorkflowContent) {
+              // Get current workflows from localStorage
+              const currentWorkflows = JSON.parse(localStorage.getItem('workflows') || '[]');
+
+              // Extract workflow using Workflow Visualization Agent
+              const extracted = await extractWorkflowFromConversation(fullConversation, currentWorkflows);
+            
+            if (extracted && extracted.workflowName && extracted.steps && extracted.steps.length > 0) {
+              // Update workflows in localStorage
+              const existingIndex = currentWorkflows.findIndex((w: any) => w.name === extracted.workflowName);
+              
+              if (existingIndex >= 0) {
+                // Update existing workflow
+                currentWorkflows[existingIndex] = {
+                  ...currentWorkflows[existingIndex],
+                  steps: extracted.steps.map((step: any, index: number) => ({
+                    ...step,
+                    id: step.id || `step-${Date.now()}-${index}`,
+                    order: step.order !== undefined ? step.order : index,
+                  })),
+                  description: extracted.description || currentWorkflows[existingIndex].description,
+                };
+              } else {
+                // Create new workflow
+                const workflowId = `workflow-${Date.now()}`;
+                const newWorkflow = {
+                  id: workflowId,
+                  name: extracted.workflowName,
+                  description: extracted.description || '',
+                  steps: extracted.steps.map((step: any, index: number) => ({
+                    ...step,
+                    id: step.id || `step-${Date.now()}-${index}`,
+                    order: step.order !== undefined ? step.order : index,
+                  })),
+                };
+                currentWorkflows.push(newWorkflow);
+                
+                // Auto-create a digital worker to orchestrate this workflow
+                if (onOrgChartUpdate) {
+                  const coordinatorName = `${extracted.workflowName} Coordinator`;
+                  const currentOrgData = JSON.parse(JSON.stringify(currentOrgChart || { name: "You", type: 'human', role: "Owner", children: [] }));
+                  
+                  // Add digital worker as a child of "You"
+                  if (!currentOrgData.children) {
+                    currentOrgData.children = [];
+                  }
+                  
+                  // Check if coordinator already exists
+                  const existingCoordinator = currentOrgData.children.find((child: any) => 
+                    child.name === coordinatorName && child.type === 'ai'
+                  );
+                  
+                  if (!existingCoordinator) {
+                    currentOrgData.children.push({
+                      name: coordinatorName,
+                      type: 'ai',
+                      role: `Orchestrates ${extracted.workflowName}`,
+                      status: 'active',
+                      assignedWorkflows: [workflowId]
+                    });
+                    
+                    // Update org chart
+                    onOrgChartUpdate(currentOrgData);
+                  }
+                }
+              }
+              
+              // Save to localStorage
+              localStorage.setItem('workflows', JSON.stringify(currentWorkflows));
             }
-            // Silently update the org chart in the background
-            onOrgChartUpdate(updatedStructure);
           }
         } catch (error) {
           // Silently fail - don't interrupt the conversation
-          console.error("Background org structure update failed:", error);
+          console.error('Background workflow extraction failed:', error);
         }
       };
       
-      // Trigger background update (non-blocking)
-      updateOrgStructureInBackground();
+      // Debounce workflow extraction slightly to avoid too many calls
+      setTimeout(extractWorkflowInBackground, 3000);
       
-      // Note: Org structure is now built automatically in the background above
-      // No need to wait for user consent - it updates continuously as conversation progresses
+      // Note: Workflows are built automatically in the background from conversation
+      // Org structure is NOT auto-populated - users build it manually in "Your Team" tab using the Team Architect chat
       
       // Advance conversation step if we get a comprehensive response
       if (conversationStep < 2 && responseText.length > 200) {
@@ -444,14 +556,41 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
                     className="w-full bg-transparent border-none text-gray-900 text-[15px] p-4 min-h-[60px] max-h-[200px] resize-none focus:ring-0 outline-none placeholder-gray-400"
                  />
                  
+                 {/* Uploaded Files Display */}
+                 {uploadedFiles.length > 0 && (
+                   <div className="px-4 pb-2 flex flex-wrap gap-2">
+                     {uploadedFiles.map((file, index) => (
+                       <div key={index} className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-1.5 text-sm">
+                         <FileText size={14} className="text-blue-600" />
+                         <span className="text-blue-900 font-medium">{file.name}</span>
+                         <button
+                           onClick={() => removeFile(index)}
+                           className="text-blue-600 hover:text-blue-800 transition-colors"
+                         >
+                           <X size={14} />
+                         </button>
+                       </div>
+                     ))}
+                   </div>
+                 )}
+
                  {/* Input Actions */}
                  <div className="px-3 pb-3 flex items-center justify-between">
                     <div className="flex items-center gap-1">
-                       <button className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded-lg transition-colors" title="Upload File">
+                       <input
+                         type="file"
+                         ref={fileInputRef}
+                         onChange={handleFileUpload}
+                         accept=".xlsx,.xls,.pdf"
+                         multiple
+                         className="hidden"
+                       />
+                       <button 
+                         onClick={() => fileInputRef.current?.click()}
+                         className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded-lg transition-colors" 
+                         title="Upload Excel or PDF"
+                       >
                           <Plus size={18} />
-                       </button>
-                       <button className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-200 rounded-lg transition-colors" title="Gallery">
-                          <ImageIcon size={18} />
                        </button>
                     </div>
                     
