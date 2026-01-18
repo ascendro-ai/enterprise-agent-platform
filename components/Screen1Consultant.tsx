@@ -35,20 +35,46 @@ const Screen1Consultant: React.FC<Screen1ConsultantProps> = ({ onOrgChartUpdate,
   const [input, setInput] = useState('');
   const [conversationStep, setConversationStep] = useState(0); 
   const [messages, setMessages] = useState<ChatMessage[]>(propMessages || []);
+  const isUpdatingFromPropsRef = useRef(false);
+  const messagesRef = useRef(messages);
   
-  // Sync with parent state
+  // Update ref whenever messages change
   useEffect(() => {
-    if (propMessages) {
-      setMessages(propMessages);
+    messagesRef.current = messages;
+  }, [messages]);
+  
+  // Sync with parent state (with deep comparison to prevent loops)
+  useEffect(() => {
+    if (!propMessages || propMessages.length === 0) {
+      if (messages.length === 0) return; // Both empty, no update needed
+    }
+    
+    // Deep comparison to check if messages actually changed
+    const currentStr = JSON.stringify(messagesRef.current.map(m => ({ id: m.id, sender: m.sender, text: m.text })));
+    const propStr = JSON.stringify(propMessages?.map(m => ({ id: m.id, sender: m.sender, text: m.text })) || []);
+    
+    if (currentStr !== propStr && !isUpdatingFromPropsRef.current) {
+      isUpdatingFromPropsRef.current = true;
+      setMessages(propMessages || []);
+      // Reset flag after state update
+      setTimeout(() => {
+        isUpdatingFromPropsRef.current = false;
+      }, 0);
     }
   }, [propMessages]);
   
   // Update parent when messages change
+  // Only notify parent if the change came from this component, not from props
   useEffect(() => {
+    if (isUpdatingFromPropsRef.current) {
+      // Don't notify parent if we're just syncing from props
+      return;
+    }
+    
     if (onMessagesChange) {
       onMessagesChange(messages);
     }
-  }, [messages, onMessagesChange]);
+  }, [messages]); // Removed onMessagesChange from deps - it should be stable
   const [isTyping, setIsTyping] = useState(false);
   
   // Voice recognition state

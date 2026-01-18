@@ -40,14 +40,64 @@ const Screen3Workflows: React.FC<Screen3WorkflowsProps> = ({
     return [];
   });
 
-  // Sync with propWorkflows if provided
+  // Use refs to prevent circular updates
+  const isUpdatingFromPropsRef = useRef(false);
+  const isUpdatingFromLocalRef = useRef(false);
+  const workflowsRef = useRef(workflows);
+
+  // Update ref whenever workflows change
   useEffect(() => {
-    if (propWorkflows) {
+    workflowsRef.current = workflows;
+  }, [workflows]);
+
+  // Sync with propWorkflows if provided (with deep comparison to prevent loops)
+  useEffect(() => {
+    if (!propWorkflows || propWorkflows.length === 0) return;
+    
+    // Deep comparison to check if workflows actually changed
+    const currentStr = JSON.stringify(workflowsRef.current.map(w => ({ id: w.id, name: w.name, steps: w.steps })));
+    const propStr = JSON.stringify(propWorkflows.map(w => ({ id: w.id, name: w.name, steps: w.steps })));
+    
+    if (currentStr !== propStr && !isUpdatingFromLocalRef.current) {
+      isUpdatingFromPropsRef.current = true;
       setWorkflows(propWorkflows);
+      // Reset flag after state update
+      setTimeout(() => {
+        isUpdatingFromPropsRef.current = false;
+      }, 0);
     }
   }, [propWorkflows]);
 
   const [selectedWorkflow, setSelectedWorkflow] = useState<Workflow | null>(null);
+  const selectedWorkflowIdRef = useRef<string | null>(null);
+  
+  // Update ref when selected workflow changes
+  useEffect(() => {
+    selectedWorkflowIdRef.current = selectedWorkflow?.id || null;
+  }, [selectedWorkflow]);
+  
+  // Preserve selected workflow when workflows array updates (sync the selected workflow with updated data)
+  useEffect(() => {
+    if (selectedWorkflowIdRef.current) {
+      const updatedWorkflow = workflows.find(w => w.id === selectedWorkflowIdRef.current);
+      if (updatedWorkflow) {
+        // Update selected workflow to use the latest data from workflows array
+        setSelectedWorkflow(prev => {
+          if (prev && prev.id === updatedWorkflow.id) {
+            // Only update if workflow data actually changed
+            const prevStr = JSON.stringify(prev);
+            const updatedStr = JSON.stringify(updatedWorkflow);
+            return prevStr !== updatedStr ? updatedWorkflow : prev;
+          }
+          return updatedWorkflow;
+        });
+      } else {
+        // Selected workflow no longer exists in workflows array, clear selection
+        setSelectedWorkflow(null);
+        selectedWorkflowIdRef.current = null;
+      }
+    }
+  }, [workflows]);
   const [isEditingStep, setIsEditingStep] = useState<string | null>(null);
   const [selectedStepForBuilder, setSelectedStepForBuilder] = useState<{ workflowId: string; stepId: string; agentName: string } | null>(null);
   
@@ -70,9 +120,17 @@ const Screen3Workflows: React.FC<Screen3WorkflowsProps> = ({
   const [isGoogleLoggedIn, setIsGoogleLoggedIn] = useState(false);
 
   // Save workflows to localStorage and notify parent whenever they change
+  // Only notify parent if the change came from this component, not from props
   useEffect(() => {
+    if (isUpdatingFromPropsRef.current) {
+      // Don't notify parent if we're just syncing from props
+      return;
+    }
+
     try {
       localStorage.setItem('workflows', JSON.stringify(workflows));
+      
+      // Only notify parent if workflows actually changed (not just a prop sync)
       if (onWorkflowUpdate) {
         onWorkflowUpdate(workflows);
       }
@@ -82,9 +140,10 @@ const Screen3Workflows: React.FC<Screen3WorkflowsProps> = ({
     } catch (e) {
       console.error('Error saving workflows:', e);
     }
-  }, [workflows, onWorkflowUpdate, onWorkflowsUpdate]);
+  }, [workflows]); // Removed onWorkflowUpdate and onWorkflowsUpdate from deps - they should be stable
 
   // Sync workflows from localStorage (they're created in Screen1Consultant in the background)
+  // Use ref to access current workflows without including in dependencies
   useEffect(() => {
     const syncWorkflows = () => {
       try {
@@ -93,11 +152,23 @@ const Screen3Workflows: React.FC<Screen3WorkflowsProps> = ({
           if (saved) {
             const parsed = JSON.parse(saved);
             if (Array.isArray(parsed)) {
+              // Use ref to get current workflows without dependency
+              const currentWorkflows = workflowsRef.current;
               // Only update if workflows have changed
-              const currentIds = workflows.map(w => w.id).sort().join(',');
+              const currentIds = currentWorkflows.map(w => w.id).sort().join(',');
               const newIds = parsed.map((w: any) => w.id).sort().join(',');
-              if (currentIds !== newIds || workflows.length !== parsed.length) {
+              
+              // Deep comparison to prevent unnecessary updates
+              const currentStr = JSON.stringify(currentWorkflows.map(w => ({ id: w.id, name: w.name, steps: w.steps })));
+              const newStr = JSON.stringify(parsed.map((w: any) => ({ id: w.id, name: w.name, steps: w.steps })));
+              
+              if (currentStr !== newStr && !isUpdatingFromPropsRef.current) {
+                isUpdatingFromLocalRef.current = true;
                 setWorkflows(parsed);
+                // Reset flag after state update
+                setTimeout(() => {
+                  isUpdatingFromLocalRef.current = false;
+                }, 0);
               }
             }
           }
@@ -110,7 +181,7 @@ const Screen3Workflows: React.FC<Screen3WorkflowsProps> = ({
     // Check for updates every 2 seconds
     const intervalId = setInterval(syncWorkflows, 2000);
     return () => clearInterval(intervalId);
-  }, [workflows]);
+  }, []); // Empty deps - use refs to access current state
 
   // Get all AI agents from org chart for assignment
   const getAllAgents = (node: any): Array<{ id: string; name: string }> => {
